@@ -16,6 +16,14 @@ local function expectQuaternion(q, x, y, z, w)
   expect(q:unpack()).to.approximately.equal(x, y, z, w)
 end
 
+local function expectMatrix(m, ...)
+  expect(type(m)).to.be('cdata')
+  expect(simd.isvector(m)).to.be(false)
+  expect(ffi.typeof(m)).to.be(mat4.ctype)
+  expect(ffi.sizeof(m)).to.be(64)
+  expect(m:unpack(true)).to.approximately.equal(...)
+end
+
 group('math', function()
   group('vector', function()
     test('constructors and fields', function()
@@ -118,6 +126,54 @@ group('math', function()
   end)
 
   group('Mat4', function()
+    test('constructors, representation, and fields', function()
+      expect(lovr.math.newMat4).to.be(mat4)
+      expect(lovr.math.mat4).to.be(mat4)
+      expect(mat4():type()).to.be('Mat4')
+
+      local identity = {
+        1, 0, 0, 0,
+        0, 1, 0, 0,
+        0, 0, 1, 0,
+        0, 0, 0, 1
+      }
+      expectMatrix(mat4(), unpack(identity))
+
+      local diagonal = mat4(2)
+      expectMatrix(diagonal,
+        2, 0, 0, 0,
+        0, 2, 0, 0,
+        0, 0, 2, 0,
+        0, 0, 0, 2
+      )
+
+      local values = {}
+      for i = 1, 16 do values[i] = i end
+      local explicit = mat4(unpack(values))
+      expectMatrix(explicit, unpack(values))
+      expect(explicit[1], explicit[6], explicit[11], explicit[16]).to.equal(1, 6, 11, 16)
+
+      explicit[1], explicit[6], explicit[11], explicit[16] = 16, 11, 6, 1
+      expect(explicit[1], explicit[6], explicit[11], explicit[16]).to.equal(16, 11, 6, 1)
+      expect(function() return explicit[17] end).to.fail()
+      expect(function() explicit.foo = 1 end).to.fail()
+
+      local copy = mat4(explicit)
+      expect(copy:equals(explicit)).to.be(true)
+      explicit[1] = 99
+      expect(copy[1]).to.be(16)
+      expect(copy:equals(explicit)).to.be(false)
+
+      local constructor = mat4
+      _G.mat4 = nil
+      local ok, first = pcall(function() return copy:unpack(true) end)
+      _G.mat4 = constructor
+      expect(ok).to.be(true)
+      expect(first).to.be(16)
+
+      copy:release()
+    end)
+
     test(':set', function()
       local position = vector(1, 2, 3)
       local rotation = quaternion(1.2, 1, 0, 0)
@@ -176,6 +232,126 @@ group('math', function()
         expect(getmetatable(matrix * keyval)).to.be(getmetatable(keyval))
         expect(getmetatable(matrix * v)).to.be(getmetatable(v))
       end)
+
+      test('homogeneous vector and perspective point semantics', function()
+        local matrix = mat4(2)
+        expectVector(matrix * vector(1, 2, 3), 1, 2, 3)
+        expectVector(matrix:mul(vector(1, 2, 3)), 2, 4, 6)
+        expect(matrix:mul(1, 2, 3)).to.equal(2, 4, 6, 2)
+        expect(matrix:mul(1, 2, 3, 0)).to.equal(2, 4, 6, 0)
+        expect(matrix:mul({ 1, 2, 3 }, 0)).to.equal({ 2, 4, 6 })
+      end)
+    end)
+
+    test('packed transform methods', function()
+      local matrix = mat4()
+      expect(matrix:translate(1, 2, 3)).to.be(matrix)
+      expect(matrix:scale(2, 3, 4)).to.be(matrix)
+      expectVector(matrix * vector(5, 6, 7), 11, 20, 31)
+      expect(matrix:getPosition()).to.equal(1, 2, 3)
+      expect(matrix:getScale()).to.equal(2, 3, 4)
+
+      expect(matrix:setPosition(vector(8, 9, 10))).to.be(matrix)
+      expect(matrix:setScale(4, 5, 6)).to.be(matrix)
+      expect(matrix:getPosition()).to.equal(8, 9, 10)
+      expect(matrix:getScale()).to.equal(4, 5, 6)
+
+      expect(matrix:identity()).to.be(matrix)
+      expect(matrix:equals(mat4())).to.be(true)
+    end)
+
+    test('invert and transpose', function()
+      local matrix = mat4(
+        1, 2, 3, 4,
+        5, 6, 7, 8,
+        9, 10, 11, 12,
+        13, 14, 15, 16
+      )
+      expect(matrix:transpose()).to.be(matrix)
+      expectMatrix(matrix,
+        1, 5, 9, 13,
+        2, 6, 10, 14,
+        3, 7, 11, 15,
+        4, 8, 12, 16
+      )
+
+      matrix = mat4():translate(1, 2, 3):scale(2, 3, 4)
+      local inverse = mat4(matrix):invert()
+      expect((matrix * inverse):equals(mat4())).to.be(true)
+    end)
+
+    test('rotate and projection methods', function()
+      local matrix = mat4():rotate(quaternion(math.pi / 2, 0, 0, 1))
+      expectVector(matrix * vector.right, 0, 1, 0)
+
+      matrix:orthographic(10, 20)
+      expectMatrix(matrix,
+        .2, 0, 0, 0,
+        0, .1, 0, 0,
+        0, 0, -.5, 0,
+        -1, -1, .5, 1
+      )
+
+      matrix:perspective(math.rad(80), 1440 / 900, .01, 0)
+      expectMatrix(matrix,
+        .74484598636627, 0, 0, 0,
+        0, -1.1917536258698, 0, 0,
+        0, 0, 0, -1,
+        0, 0, .01, 0
+      )
+
+      matrix:fov(.5, .6, .7, .8, .01, 0)
+      expect(matrix[11], matrix[12], matrix[15], matrix[16]).to.approximately.equal(0, -1, .01, 0)
+    end)
+
+    test('look, target, and reflect vector paths', function()
+      local from = vector(1, 2, 3)
+      local to = vector(-2, 4, -1)
+      local up = vector.up
+
+      local fast = mat4():lookAt(from, to, up)
+      local compatibility = mat4():lookAt(
+        { from:unpack() },
+        { to:unpack() },
+        { up:unpack() }
+      )
+      expect(fast:equals(compatibility)).to.be(true)
+
+      fast:target(from, to, up)
+      compatibility:target(
+        { from:unpack() },
+        { to:unpack() },
+        { up:unpack() }
+      )
+      expect(fast:equals(compatibility)).to.be(true)
+
+      local position = vector(2, 3, 4)
+      local normal = vector(1, 2, 3):normalize()
+      fast:reflect(position, normal)
+      compatibility:reflect({ position:unpack() }, { normal:unpack() })
+      expect(fast:equals(compatibility)).to.be(true)
+    end)
+
+    test('hot loop JIT', function()
+      local matrix = mat4(
+        1, 0, 0, 0,
+        0, 1, 0, 0,
+        0, 0, 1, 0,
+        .25, -.5, .75, 1
+      )
+      local inverse = mat4(
+        1, 0, 0, 0,
+        0, 1, 0, 0,
+        0, 0, 1, 0,
+        -.25, .5, -.75, 1
+      )
+      local point = vector(1, 2, 3)
+
+      for _ = 1, 600 do
+        point = inverse * (matrix * point)
+      end
+
+      expectVector(point, 1, 2, 3)
     end)
 
     test(':setPosition', function()

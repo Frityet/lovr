@@ -34,6 +34,8 @@ LOVR_EXPORT int luaopen_lovr_task(lua_State* L);
 LOVR_EXPORT int luaopen_lovr_thread(lua_State* L);
 LOVR_EXPORT int luaopen_lovr_timer(lua_State* L);
 
+static void luax_pushmat4(lua_State* L, const float matrix[16]);
+
 static int luax_tostring(lua_State* L) {
   Object* object = lua_touserdata(L, 1);
   lua_pushfstring(L, "%s: %p", lovrTypeInfo[object->type].name, object->pointer);
@@ -643,6 +645,14 @@ static void _luax_checkvariant(lua_State* L, int index, Variant* variant, int de
 #endif
 
     case LUA_TCDATA: {
+      float* matrix = luax_tomat4(L, index);
+      if (matrix) {
+        variant->type = TYPE_MATRIX;
+        variant->matrix.data = lovrMalloc(16 * sizeof(float));
+        memcpy(variant->matrix.data, matrix, 16 * sizeof(float));
+        break;
+      }
+
       size_t lanes;
       const float* vector = lua_tofloatvector(L, index, &lanes);
       if (!vector || lanes < 4) {
@@ -678,6 +688,7 @@ int luax_pushvariant(lua_State* L, Variant* variant) {
     case TYPE_OBJECT: _luax_pushtype(L, variant->object.type, variant->object.pointer); return 1;
     case TYPE_VECTOR: luax_pushsimdvec3(L, variant->vector.data); return 1;
     case TYPE_QUATERNION: luax_pushsimdquat(L, variant->quaternion.data); return 1;
+    case TYPE_MATRIX: luax_pushmat4(L, variant->matrix.data); return 1;
     case TYPE_TABLE:
       lua_newtable(L);
       for (size_t i = 0; i < variant->table.count; i++) {
@@ -1045,6 +1056,12 @@ int luax_readquat(lua_State* L, int index, quat q, const char* expected) {
 }
 
 int luax_readmat4(lua_State* L, int index, mat4 m, int scaleComponents) {
+  float* matrix = luax_tomat4(L, index);
+  if (matrix) {
+    mat4_init(m, matrix);
+    return index + 1;
+  }
+
   switch (lua_type(L, index)) {
     case LUA_TNIL:
     case LUA_TNONE:
@@ -1063,12 +1080,7 @@ int luax_readmat4(lua_State* L, int index, mat4 m, int scaleComponents) {
       mat4_fromPose(m, T, R);
       mat4_scale(m, S[0], S[1], S[2]);
       return index;
-    default:;
-      Mat4* matrix = luax_totype(L, index, Mat4);
-      if (matrix) {
-        mat4_init(m, lovrMat4GetData(matrix));
-        return index + 1;
-      }
+    default:
       return luax_typeerror(L, index, "number, table, vector, or Mat4");
   }
 }
@@ -1102,6 +1114,46 @@ static void luax_getmathglobal(lua_State* L, const char* name) {
   lua_call(L, 1, 1);
   lua_pop(L, 1);
   lua_getglobal(L, name);
+}
+
+static void luax_pushmat4(lua_State* L, const float matrix[16]) {
+  lua_getfield(L, LUA_REGISTRYINDEX, "_lovr_mat4_ctype");
+  if (lua_isnil(L, -1)) {
+    lua_pop(L, 1);
+    luax_getmathglobal(L, "mat4");
+    lua_getfield(L, -1, "ctype");
+    lua_remove(L, -2);
+    lua_pushvalue(L, -1);
+    lua_setfield(L, LUA_REGISTRYINDEX, "_lovr_mat4_ctype");
+  }
+
+  lua_call(L, 0, 1);
+  memcpy(luax_checkmat4(L, -1), matrix, 16 * sizeof(float));
+}
+
+float* luax_tomat4(lua_State* L, int index) {
+#ifdef LOVR_USE_LUAU
+  Mat4* matrix = luax_totype(L, index, Mat4);
+  return matrix ? lovrMat4GetData(matrix) : NULL;
+#else
+  if (lua_type(L, index) != LUA_TCDATA) {
+    return NULL;
+  }
+
+  index = index > 0 ? index : index + lua_gettop(L) + 1;
+  lua_getfield(L, LUA_REGISTRYINDEX, "_lovr_mat4_ctype");
+
+  size_t size;
+  float* matrix = lua_tocdataof(L, index, -1, &size);
+  lua_pop(L, 1);
+  return size == 16 * sizeof(float) ? matrix : NULL;
+#endif
+}
+
+float* luax_checkmat4(lua_State* L, int index) {
+  float* matrix = luax_tomat4(L, index);
+  if (!matrix) luax_typeerror(L, index, "Mat4");
+  return matrix;
 }
 
 static void luax_pushsimd(lua_State* L, const char* name, const char* registry, const float v[4]) {

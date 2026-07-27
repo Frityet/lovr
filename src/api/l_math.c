@@ -222,7 +222,7 @@ int luaopen_lovr_math(lua_State* L) {
   luax_atexit(L, lovrMathDestroy);
 
 #ifndef LOVR_USE_LUAU
-  // FFI SIMD vectors and quaternions
+  // FFI SIMD vectors, quaternions, and matrices
   if (!luaL_loadbuffer(L, (const char*) src_api_l_math_lua, src_api_l_math_lua_len, "=vector")) {
     luaL_newmetatable(L, "Vec2");
     luaL_newmetatable(L, "Vec3");
@@ -230,6 +230,10 @@ int luaopen_lovr_math(lua_State* L) {
     luaL_newmetatable(L, "Quat");
     luaL_newmetatable(L, "Mat4");
     lua_call(L, 5, 0);
+    lua_getglobal(L, "mat4");
+    lua_getfield(L, -1, "ctype");
+    lua_setfield(L, LUA_REGISTRYINDEX, "_lovr_mat4_ctype");
+    lua_pop(L, 1);
   } else {
     return lua_error(L);
   }
@@ -260,8 +264,13 @@ int luaopen_lovr_math(lua_State* L) {
         lua_setglobal(L, "quat");
         lua_setglobal(L, "Quat");
 
+#ifdef LOVR_USE_LUAU
         lua_pushcfunction(L, l_lovrMathNewMat4);
         lua_pushcfunction(L, l_lovrMathNewMat4);
+#else
+        lua_getglobal(L, "mat4");
+        lua_getglobal(L, "mat4");
+#endif
         lua_setglobal(L, "mat4");
         lua_setglobal(L, "Mat4");
       }
@@ -295,8 +304,15 @@ int luaopen_lovr_math(lua_State* L) {
   lua_getglobal(L, "quaternion");
   lua_setfield(L, -2, "newQuat");
 
+#ifdef LOVR_USE_LUAU
   lua_getfield(L, -1, "newMat4");
   lua_setfield(L, -2, "mat4");
+#else
+  lua_getglobal(L, "mat4");
+  lua_pushvalue(L, -1);
+  lua_setfield(L, -3, "newMat4");
+  lua_setfield(L, -2, "mat4");
+#endif
 
   return 1;
 }

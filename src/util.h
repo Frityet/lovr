@@ -201,6 +201,7 @@ typedef enum {
   TYPE_OBJECT,
   TYPE_VECTOR,
   TYPE_QUATERNION,
+  TYPE_MATRIX,
   TYPE_TABLE
 } VariantType;
 
@@ -214,6 +215,7 @@ typedef union Variant {
   struct { VariantType _type; ObjectType type; void* pointer; } object;
   struct { VariantType type; float data[3]; } vector;
   struct { VariantType type; float data[4]; } quaternion;
+  struct { VariantType type; float* data; } matrix;
   struct { VariantType type; uint32_t count; union Variant* pairs; } table;
 } Variant;
 

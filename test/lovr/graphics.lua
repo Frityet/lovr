@@ -43,6 +43,30 @@ group('graphics', function()
       expect(buffer:getData()).to.equal({ 1, 2, 3, 4, 5, 6 })
     end)
 
+    test('format: matrix', function()
+      local values = {}
+      for i = 1, 16 do values[i] = i end
+      local matrix = mat4(unpack(values))
+
+      buffer = lovr.graphics.newBuffer('mat4', matrix)
+      expect(buffer:getSize()).to.be(64)
+      expect(buffer:getLength()).to.be(0)
+      expect(buffer:getStride()).to.be(64)
+      expect(buffer:getData()).to.equal(unpack(values))
+
+      local inverse = {}
+      for i = 1, 16 do inverse[i] = 17 - i end
+      buffer:setData(mat4(unpack(inverse)))
+      expect(buffer:getData()).to.equal(unpack(inverse))
+
+      buffer = lovr.graphics.newBuffer('mat4', { matrix, mat4(unpack(inverse)) })
+      expect(buffer:getLength()).to.be(2)
+      expect(buffer:getData()).to.equal({
+        1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16,
+        16, 15, 14, 13, 12, 11, 10, 9, 8, 7, 6, 5, 4, 3, 2, 1
+      })
+    end)
+
     test('format: scalar array (single)', function()
       buffer = lovr.graphics.newBuffer('int', 1)
       expect(buffer:getSize()).to.be(4)
@@ -459,6 +483,21 @@ group('graphics', function()
       expect(pass:getWidth()).to.equal(0)
       expect(pass:getHeight()).to.equal(0)
       expect(pass:getDimensions()).to.equal(0, 0)
+    end)
+
+    test('matrix view and projection I/O', function()
+      local pass = lovr.graphics.newPass(lovr.graphics.newTexture(1, 1))
+      local projection = mat4():perspective(1.2, 1.6, .01, 100)
+      pass:setProjection(projection)
+
+      local output = mat4()
+      expect(pass:getProjection(1, output)).to.be(output)
+      expect(output:equals(projection)).to.be(true)
+
+      local view = mat4():lookAt(vector(1, 2, 3), vector.zero)
+      pass:setViewPose(1, view, true)
+      expect(pass:getViewPose(1, output, true)).to.be(output)
+      expect(output:equals(view)).to.be(true)
     end)
 
     group(':setCanvas', function()

@@ -282,7 +282,7 @@ static int l_lovrPassGetViewPose(lua_State* L) {
   Pass* pass = luax_checktype(L, 1, Pass);
   uint32_t view = luaL_checkinteger(L, 2) - 1;
   if (lua_gettop(L) > 2) {
-    float* matrix = lovrMat4GetData(luax_checktype(L, 3, Mat4));
+    float* matrix = luax_checkmat4(L, 3);
     bool invert = lua_toboolean(L, 4);
     luax_assert(L, lovrPassGetViewMatrix(pass, view, matrix));
     if (!invert) mat4_invert(matrix);
@@ -307,10 +307,10 @@ static int l_lovrPassGetViewPose(lua_State* L) {
 static int l_lovrPassSetViewPose(lua_State* L) {
   Pass* pass = luax_checktype(L, 1, Pass);
   uint32_t view = luaL_checkinteger(L, 2) - 1;
-  Mat4* matrix = luax_totype(L, 3, Mat4);
+  float* matrix = luax_tomat4(L, 3);
   if (matrix) {
     float m[16];
-    mat4_init(m, lovrMat4GetData(matrix));
+    mat4_init(m, matrix);
     bool inverted = lua_toboolean(L, 4);
     if (!inverted) mat4_invert(m);
     luax_assert(L, lovrPassSetViewMatrix(pass, view, m));
@@ -330,7 +330,7 @@ static int l_lovrPassGetProjection(lua_State* L) {
   Pass* pass = luax_checktype(L, 1, Pass);
   uint32_t view = luaL_checkinteger(L, 2) - 1;
   if (lua_gettop(L) > 2) {
-    float* matrix = lovrMat4GetData(luax_checktype(L, 3, Mat4));
+    float* matrix = luax_checkmat4(L, 3);
     luax_assert(L, lovrPassGetProjection(pass, view, matrix));
     lua_settop(L, 3);
     return 1;
@@ -352,10 +352,10 @@ static int l_lovrPassSetProjection(lua_State* L) {
   mat4 projection = (float[16]) { 0 };
 
   int index = view == ~0u ? 2 : 3;
-  Mat4* matrix = luax_totype(L, index, Mat4);
+  float* matrix = luax_tomat4(L, index);
 
   if (matrix) {
-    projection = lovrMat4GetData(matrix);
+    projection = matrix;
   } else if (lua_type(L, index) == LUA_TNUMBER) { // Deprecated
     float left = luax_checkfloat(L, index++);
     float right = luax_checkfloat(L, index++);

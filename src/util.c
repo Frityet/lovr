@@ -376,6 +376,7 @@ TypeInfo lovrTypeInfo[T_COUNT];
 void lovrVariantDestroy(Variant* variant) {
   switch (variant->type) {
     case TYPE_STRING: lovrFree(variant->string.pointer); return;
+    case TYPE_MATRIX: lovrFree(variant->matrix.data); return;
     case TYPE_OBJECT: lovrRelease(variant->object.pointer, lovrTypeInfo[variant->object.type].destructor); return;
     case TYPE_TABLE:
       for (size_t i = 0; i < variant->table.count; i++) {

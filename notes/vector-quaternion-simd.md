@@ -14,6 +14,9 @@ quaternions an exact, distinct ctype and metatype without wrapping the SIMD
 payload in a struct.  A private volatile-qualified float4 is used for
 metatype-free packed intermediates.
 
+The four-column FFI matrix representation built on these values is documented
+separately in `notes/mat4-simd.md`.
+
 Vectors preserve a zero fourth lane.  Public component access remains
 `x/y/z`, and quaternions remain `x/y/z/w`.  All constructors, constants,
 operators, vector methods, and quaternion methods return these cdata vector

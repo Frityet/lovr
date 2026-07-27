@@ -150,6 +150,8 @@ int luax_readvec3(lua_State* L, int index, float* v, const char* expected);
 int luax_readscale(lua_State* L, int index, float* v, int components, const char* expected);
 int luax_readquat(lua_State* L, int index, float* q, const char* expected);
 int luax_readmat4(lua_State* L, int index, float* m, int scaleComponents);
+float* luax_tomat4(lua_State* L, int index);
+float* luax_checkmat4(lua_State* L, int index);
 void luax_pushvec3(lua_State* L, float v[3], bool tableArray);
 void luax_pushsimdvec3(lua_State* L, float v[3]);
 void luax_pushsimdquat(lua_State* L, float q[4]);
