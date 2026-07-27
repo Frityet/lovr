@@ -24,8 +24,6 @@ option(LOVR_ENABLE_UTF8 "Enable the utf8 module" ON)
 
 # Optional Libraries
 option(LOVR_USE_GLFW "Use GLFW for desktop windows" ON)
-option(LOVR_USE_LUAJIT "Use LuaJIT instead of Lua" ON)
-option(LOVR_USE_LUAU "Use Luau instead of Lua" OFF)
 option(LOVR_USE_GLSLANG "Use glslang to compile GLSL shaders" ON)
 option(LOVR_USE_VULKAN "Use the Vulkan renderer" ON)
 option(LOVR_USE_WEBGPU "Use the WebGPU renderer" OFF)
@@ -34,7 +32,7 @@ option(LOVR_USE_TINCTURE "Use tincture to compile shaders" OFF)
 
 # System Libraries
 option(LOVR_SYSTEM_GLFW "Use the system-provided GLFW" OFF)
-option(LOVR_SYSTEM_LUA "Use the system-provided Lua" OFF)
+option(LOVR_SYSTEM_LUAJIT "Use the system-provided LuaJIT" OFF)
 option(LOVR_SYSTEM_OPENXR "Use the system-provided OpenXR" OFF)
 
 # Debugging
@@ -51,31 +49,7 @@ set(LOVR_PROJECT "${PROJECT_SOURCE_DIR}/etc/nogame" CACHE STRING "The project fo
 
 # Setup
 if(EMSCRIPTEN)
-  string(CONCAT EMSCRIPTEN_LINKER_FLAGS
-    "-Os "
-    "-sJSPI=1 "
-    "-sASYNCIFY_IGNORE_INDIRECT=1 "
-    "-sFORCE_FILESYSTEM=1 "
-    "-sSTACK_SIZE=2MB "
-    "-sINITIAL_MEMORY=1677721600 "
-    "-sMIN_FIREFOX_VERSION=152 "
-    "-sEXPORTED_FUNCTIONS=_main,_lovrGraphicsGetWindowTexture,_lovrGraphicsGetWindowPass,_lovrPassSetViewMatrix,_lovrPassSetProjection "
-    "-sEXPORTED_RUNTIME_METHODS=getValue,setValue "
-    "--js-library \"${PROJECT_SOURCE_DIR}/src/lib/webgpu/webgpu.js\" "
-    "--js-library \"${PROJECT_SOURCE_DIR}/src/modules/headset/headset.js\" "
-    "--shell-file \"${PROJECT_SOURCE_DIR}/etc/lovr.html\""
-  )
-  set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -Os -sSUPPORT_LONGJMP=wasm -fno-exceptions")
-  set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Os -sSUPPORT_LONGJMP=wasm -fno-exceptions")
-  if(LOVR_ENABLE_THREAD)
-    set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -pthread")
-    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -pthread")
-  endif()
-  set(CMAKE_EXECUTABLE_SUFFIX ".html")
-  set(LOVR_USE_WEBGPU ON)
-  set(LOVR_USE_TINCTURE ON)
-  set(LOVR_USE_VULKAN OFF)
-  set(LOVR_USE_STEAM_AUDIO OFF)
+  message(FATAL_ERROR "Emscripten is not supported by this LuaJIT-only fork")
 elseif(MSVC)
   add_compile_options(/MP)
   set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>DLL")
@@ -116,75 +90,14 @@ if(LOVR_USE_GLFW AND NOT (EMSCRIPTEN OR ANDROID))
 endif()
 
 # Lua
-if(LOVR_USE_LUAU)
-  set(LOVR_ENABLE_UTF8 OFF)
-  set(LUAU_BUILD_TESTS OFF CACHE BOOL "")
-  set(LUAU_BUILD_CLI OFF CACHE BOOL "")
-  set(LUAU_EXTERN_C ON CACHE BOOL "")
-  add_subdirectory(deps/luau luau)
-  foreach(target Luau.VM Luau.Compiler)
-    get_target_property(defs ${target} INTERFACE_COMPILE_DEFINITIONS)
-    list(FILTER defs EXCLUDE REGEX [[LUA.*_API]])
-    set_target_properties(${target} PROPERTIES INTERFACE_COMPILE_DEFINITIONS "${defs}")
-  endforeach()
-  set_target_properties(
-    Luau.Analysis
-    Luau.CLI.lib
-    Luau.CodeGen
-    Luau.Config
-    Luau.Require
-    PROPERTIES EXCLUDE_FROM_ALL 1
-  )
-  set(LOVR_LUA Luau.VM Luau.Compiler Luau.Ast)
-  set_target_properties(${LOVR_LUA} PROPERTIES POSITION_INDEPENDENT_CODE 1)
-elseif(LOVR_USE_LUAJIT AND NOT EMSCRIPTEN)
-  if(LOVR_SYSTEM_LUA)
-    pkg_search_module(LUAJIT REQUIRED luajit)
-    list(APPEND LOVR_LIB_DIRS ${LUAJIT_LIBRARY_DIRS})
-    set(LOVR_LUA_INCLUDE ${LUAJIT_INCLUDE_DIRS})
-    set(LOVR_LUA_LIB_DIR ${LUAJIT_LIBRARY_DIRS})
-    set(LOVR_LUA ${LUAJIT_LIBRARIES})
-  else()
-    set(BUILD_SHARED_LIBS ON)
-    add_subdirectory(deps/luajit luajit EXCLUDE_FROM_ALL)
-    if(MSVC)
-      target_compile_definitions(libluajit PRIVATE _CRT_SECURE_NO_WARNINGS)
-      target_compile_definitions(minilua PRIVATE _CRT_SECURE_NO_WARNINGS)
-      target_compile_definitions(buildvm PRIVATE _CRT_SECURE_NO_WARNINGS)
-    endif()
-    set(LOVR_LUA_INCLUDE deps/luajit/src ${CMAKE_BINARY_DIR}/luajit)
-    set(LOVR_LUA libluajit)
-  endif()
+if(LOVR_SYSTEM_LUAJIT)
+  pkg_search_module(LUAJIT REQUIRED luajit)
+  list(APPEND LOVR_LIB_DIRS ${LUAJIT_LIBRARY_DIRS})
+  set(LOVR_LUA_INCLUDE ${LUAJIT_INCLUDE_DIRS})
+  set(LOVR_LUA_LIB_DIR ${LUAJIT_LIBRARY_DIRS})
+  set(LOVR_LUA ${LUAJIT_LIBRARIES})
 else()
-  if(LOVR_SYSTEM_LUA)
-    pkg_search_module(LUA REQUIRED lua)
-    list(APPEND LOVR_LIB_DIRS ${LUA_LIBRARY_DIRS})
-    set(LOVR_LUA_INCLUDE ${LUA_INCLUDE_DIRS})
-    set(LOVR_LUA_LIB_DIR ${LUA_LIBRARY_DIRS})
-    set(LOVR_LUA ${LUA_LIBRARIES})
-  else()
-    set(LUA_SRC
-      lapi.c lauxlib.c lbaselib.c lcode.c ldblib.c ldebug.c ldo.c ldump.c lfunc.c lgc.c linit.c
-      liolib.c llex.c lmathlib.c lmem.c loadlib.c lobject.c lopcodes.c loslib.c lparser.c lstate.c
-      lstring.c lstrlib.c ltable.c ltablib.c ltm.c lundump.c lvm.c lzio.c
-    )
-    list(TRANSFORM LUA_SRC PREPEND deps/lua/)
-    if(EMSCRIPTEN)
-      add_library(lua STATIC ${LUA_SRC})
-    else()
-      add_library(lua SHARED ${LUA_SRC})
-    endif()
-    target_include_directories(lua INTERFACE deps/lua)
-    if(MSVC)
-      target_compile_definitions(lua PRIVATE LUA_BUILD_AS_DLL)
-      target_compile_definitions(lua PRIVATE _CRT_SECURE_NO_WARNINGS)
-    else()
-      target_link_libraries(lua m)
-      target_link_libraries(lua dl)
-      target_compile_definitions(lua PRIVATE LUA_USE_DLOPEN)
-    endif()
-    set(LOVR_LUA lua)
-  endif()
+  include(cmake/LuaJIT.cmake)
 endif()
 
 # MSDF
@@ -367,10 +280,6 @@ if(LOVR_PROFILE)
   target_compile_definitions(lovr PRIVATE LOVR_PROFILE)
   target_link_libraries(lovr Tracy::TracyClient)
   target_include_directories(lovr PRIVATE deps/tracy/public/tracy)
-endif()
-
-if(LOVR_USE_LUAU)
-  target_compile_definitions(lovr PRIVATE LOVR_USE_LUAU)
 endif()
 
 if(LOVR_ENABLE_AUDIO)
@@ -809,16 +718,18 @@ elseif(ANDROID)
     lovr
     ${LOVR_JOLT}
     ${LOVR_MSDF}
-    ${LOVR_LUA}
     ${LOVR_GLSLANG}
     ${LOVR_PHONON}
     PROPERTIES LIBRARY_OUTPUT_DIRECTORY "${PROJECT_BINARY_DIR}/raw/lib/${ANDROID_ABI}"
   )
 
-  # Build Lua libraries with global symbols, so plugins don't need to explicitly link against Lua
-  foreach(target ${LOVR_LUA})
-    target_link_options(${target} PRIVATE "-Wl,-z,global")
-  endforeach()
+  if(TARGET libluajit)
+    add_custom_command(TARGET lovr POST_BUILD
+      COMMAND ${CMAKE_COMMAND} -E copy
+      $<TARGET_FILE:libluajit>
+      "${PROJECT_BINARY_DIR}/raw/lib/${ANDROID_ABI}/$<TARGET_FILE_NAME:libluajit>"
+    )
+  endif()
 
   if(LOVR_BUILD_EXE)
     set(ANDROID_JAR "${ANDROID_SDK}/platforms/${ANDROID_PLATFORM}/android.jar")
