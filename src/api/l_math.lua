@@ -1,62 +1,102 @@
-local abs, sqrt, sin, cos, asin, acos, atan2 = math.abs, math.sqrt, math.sin, math.cos, math.asin, math.acos, math.atan2
+local ffi = require 'ffi'
+local simd = require 'ffi.simd'
+local abs, sqrt, sin, cos, asin, acos, atan2 =
+  math.abs, math.sqrt, math.sin, math.cos, math.asin, math.acos, math.atan2
+
+ffi.cdef[[
+typedef float lovr_vector4 __attribute__((vector_size(16)));
+typedef const float lovr_quaternion4 __attribute__((vector_size(16)));
+typedef volatile float lovr_raw4 __attribute__((vector_size(16)));
+typedef uint32_t lovr_bits4 __attribute__((vector_size(16)));
+]]
+
+local vector_ctype
+local quaternion_ctype
+local raw_ctype = ffi.typeof('lovr_raw4')
+local bits_ctype = ffi.typeof('lovr_bits4')
+local conjugate_mask
+local euler_sign
+local quaternion_x_sign
+local quaternion_y_sign
+local quaternion_z_sign
+local muladd = simd.features().fma and simd.fma or function(a, b, c)
+  return a * b + c
+end
 
 vector = {}
 vector.__index = vector
 
+local function vector_raw(v)
+  return type(v) == 'number' and v or simd.bitcast(raw_ctype, v)
+end
+
+local function vector_result(v)
+  return simd.bitcast(vector_ctype, simd.insert(v, 3, 0))
+end
+
+local function vector_cast(v)
+  return simd.bitcast(vector_ctype, v)
+end
+
+local function dot3(a, b)
+  return simd.hsum(vector_raw(a) * vector_raw(b))
+end
+
+local function cross3raw(a, b)
+  a, b = vector_raw(a), vector_raw(b)
+  local ayzx = simd.shuffle(a, 1, 2, 0, 3)
+  local byzx = simd.shuffle(b, 1, 2, 0, 3)
+  local zxy = a * byzx - ayzx * b
+  return simd.shuffle(zxy, 1, 2, 0, 3)
+end
+
+local function cross3(a, b)
+  return vector_cast(cross3raw(a, b))
+end
+
+local function quaternion_raw(q)
+  return simd.bitcast(raw_ctype, q)
+end
+
+local function quaternion_pack(v)
+  return simd.bitcast(quaternion_ctype, v)
+end
+
 function vector.pack(x, y, z)
-  local v = { x = x, y = y or x, z = z or (y and 0 or x) }
-  setmetatable(v, vector)
-  return v
+  return vector_ctype(x, y or x, z or (y and 0 or x), 0)
 end
 
 function vector.unpack(v)
-  return v.x, v.y, v.z
+  return v[0], v[1], v[2]
 end
 
 function vector.length(v)
-  return sqrt(v.x * v.x + v.y * v.y + v.z * v.z)
+  return sqrt(dot3(v, v))
 end
 
 function vector.normalize(v)
-  local x, y, z = v.x, v.y, v.z
-  local length = sqrt(x * x + y * y + z * z)
-
-  if length == 0 then
-    return v
-  end
-
-  local normalized = { x = x / length, y = y / length, z = z / length }
-  setmetatable(normalized, vector)
-  return normalized
+  local length = sqrt(dot3(v, v))
+  return length == 0 and v or vector_cast(vector_raw(v) / length)
 end
 
 function vector.distance(v, u)
-  local dx, dy, dz = v.x - u.x, v.y - u.y, v.z - u.z
-  return sqrt(dx * dx + dy * dy + dz * dz)
+  local d = vector_raw(v) - vector_raw(u)
+  return sqrt(dot3(d, d))
 end
 
 function vector.cross(v, u)
-  local cross = {
-    x = v.y * u.z - v.z * u.y,
-    y = v.z * u.x - v.x * u.z,
-    z = v.x * u.y - v.y * u.x
-  }
-
-  setmetatable(cross, vector)
-  return cross
+  return cross3(v, u)
 end
 
 function vector.dot(v, u)
-  return v.x * u.x + v.y * u.y + v.z * u.z
+  return dot3(v, u)
 end
 
 function vector.angle(v, u, axis)
-  local cx, cy, cz = v.y * u.z - v.z * u.y, v.z * u.x - v.x * u.z, v.x * u.y - v.y * u.x
-  local sina = sqrt(cx * cx + cy * cy + cz * cz)
-  local cosa = v.x * u.x + v.y * u.y + v.z * u.z
-  local angle = atan2(sina, cosa)
+  local cross = cross3(v, u)
+  local angle = atan2(sqrt(dot3(cross, cross)), dot3(v, u))
 
-  if axis and cx * axis.x + cy * axis.y + cz * axis.z < 0 then
+  if axis and dot3(cross, axis) < 0 then
     angle = -angle
   end
 
@@ -64,14 +104,8 @@ function vector.angle(v, u, axis)
 end
 
 function vector.lerp(v, u, t)
-  local lerped = {
-    x = v.x + (u.x - v.x) * t,
-    y = v.y + (u.y - v.y) * t,
-    z = v.z + (u.z - v.z) * t
-  }
-
-  setmetatable(lerped, vector)
-  return lerped
+  local a, b = vector_raw(v), vector_raw(u)
+  return vector_cast(a + (b - a) * t)
 end
 
 -- Deprecated
@@ -79,115 +113,72 @@ function vector.rotate(v, q)
   return q * v
 end
 
+function vector.__tostring(v)
+  return ('%f, %f, %f'):format(v[0], v[1], v[2])
+end
+
 function vector.__add(a, b)
-  local x, y, z
-
-  if type(a) == 'number' then
-    x = a + b.x
-    y = a + b.y
-    z = a + b.z
-  elseif type(b) == 'number' then
-    x = a.x + b
-    y = a.y + b
-    z = a.z + b
-  else
-    x = a.x + b.x
-    y = a.y + b.y
-    z = a.z + b.z
+  local result = vector_raw(a) + vector_raw(b)
+  if type(a) == 'number' or type(b) == 'number' then
+    return vector_result(result)
   end
-
-  local v = { x = x, y = y, z = z }
-  setmetatable(v, vector)
-  return v
+  return vector_cast(result)
 end
 
 function vector.__sub(a, b)
-  local x, y, z
-
-  if type(a) == 'number' then
-    x = a - b.x
-    y = a - b.y
-    z = a - b.z
-  elseif type(b) == 'number' then
-    x = a.x - b
-    y = a.y - b
-    z = a.z - b
-  else
-    x = a.x - b.x
-    y = a.y - b.y
-    z = a.z - b.z
+  local result = vector_raw(a) - vector_raw(b)
+  if type(a) == 'number' or type(b) == 'number' then
+    return vector_result(result)
   end
-
-  local v = { x = x, y = y, z = z }
-  setmetatable(v, vector)
-  return v
+  return vector_cast(result)
 end
 
 function vector.__mul(a, b)
-  local x, y, z
-
-  if type(a) == 'number' then
-    x = a * b.x
-    y = a * b.y
-    z = a * b.z
-  elseif type(b) == 'number' then
-    x = a.x * b
-    y = a.y * b
-    z = a.z * b
-  else
-    x = a.x * b.x
-    y = a.y * b.y
-    z = a.z * b.z
-  end
-
-  local v = { x = x, y = y, z = z }
-  setmetatable(v, vector)
-  return v
+  return vector_cast(vector_raw(a) * vector_raw(b))
 end
 
 function vector.__div(a, b)
-  local x, y, z
-
-  if type(a) == 'number' then
-    x = a / b.x
-    y = a / b.y
-    z = a / b.z
-  elseif type(b) == 'number' then
-    x = a.x / b
-    y = a.y / b
-    z = a.z / b
-  else
-    x = a.x / b.x
-    y = a.y / b.y
-    z = a.z / b.z
-  end
-
-  local v = { x = x, y = y, z = z }
-  setmetatable(v, vector)
-  return v
+  return vector_result(vector_raw(a) / vector_raw(b))
 end
 
 function vector.__unm(v)
-  local result = { x = -v.x, y = -v.y, z = -v.z }
-  setmetatable(result, vector)
-  return result
+  return vector_cast(-vector_raw(v))
 end
 
-function vector.__tostring(v)
-  return ('%f, %f, %f'):format(v.x, v.y, v.z)
+local vector_fields = { x = 0, y = 1, z = 2 }
+
+local function vector_index(v, key)
+  local lane = vector_fields[key]
+  return lane and v[lane] or vector[key]
 end
+
+vector_ctype = ffi.metatype('lovr_vector4', {
+  __index = vector_index,
+  __add = vector.__add,
+  __sub = vector.__sub,
+  __mul = vector.__mul,
+  __div = vector.__div,
+  __unm = vector.__unm,
+  __tostring = vector.__tostring
+})
+
+conjugate_mask = raw_ctype(-1, -1, -1, 1)
+euler_sign = raw_ctype(1, -1, -1, 1)
+quaternion_x_sign = simd.bitcast(raw_ctype, bits_ctype(0, 0x80000000, 0, 0x80000000))
+quaternion_y_sign = simd.bitcast(raw_ctype, bits_ctype(0, 0, 0x80000000, 0x80000000))
+quaternion_z_sign = simd.bitcast(raw_ctype, bits_ctype(0x80000000, 0, 0, 0x80000000))
 
 setmetatable(vector, {
-  __call = function(self, x, y, z)
+  __call = function(_, x, y, z)
     x = x or 0
     if type(x) == 'table' then return x end -- Deprecated
+    if type(x) == 'cdata' and ffi.typeof(x) == vector_ctype then return x end
     assert(type(x) == 'number', 'vector components must be numbers')
-    local instance = { x = x, y = y or x, z = z or (y and 0 or x) }
-    setmetatable(instance, self)
-    return instance
+    return vector_ctype(x, y or x, z or (y and 0 or x), 0)
   end
 })
 
+vector.ctype = vector_ctype
 vector.zero = vector(0, 0, 0)
 vector.one = vector(1, 1, 1)
 vector.left = vector(-1, 0, 0)
@@ -204,68 +195,67 @@ quaternion = {}
 quaternion.__index = quaternion
 
 function quaternion.pack(x, y, z, w)
-  local result = { x = x, y = y, z = z, w = w }
-  setmetatable(result, quaternion)
-  return result
+  return quaternion_ctype(x, y, z, w)
 end
 
 function quaternion.unpack(q)
-  return q.x, q.y, q.z, q.w
+  return q[0], q[1], q[2], q[3]
 end
 
 function quaternion.conjugate(q)
-  local result = { x = -q.x, y = -q.y, z = -q.z, w = q.w }
-  setmetatable(result, quaternion)
-  return result
+  return quaternion_pack(quaternion_raw(q) * conjugate_mask)
 end
 
 function quaternion.angleaxis(angle, ax, ay, az)
   assert(type(angle) == 'number', 'quaternion angle must be a number')
-  assert(type(ax) == 'number' and type(ay) == 'number' and type(az) == 'number', 'quaternion axis components must be numbers')
+  assert(
+    type(ax) == 'number' and type(ay) == 'number' and type(az) == 'number',
+    'quaternion axis components must be numbers'
+  )
 
   local s = sin(angle * .5)
   local c = cos(angle * .5)
+  local axis = raw_ctype(ax, ay, az, 0)
+  local length = sqrt(dot3(axis, axis))
 
-  local length = sqrt(ax * ax + ay * ay + az * az)
-
-  local result
   if length > 0 then
-    s = s / length
-    result = { x = ax * s, y = ay * s, z = az * s, w = c }
+    return quaternion_pack(simd.insert(axis * (s / length), 3, c))
   else
-    result = { x = 0, y = 0, z = 0, w = 1 }
+    return quaternion_ctype(0, 0, 0, 1)
   end
-
-  setmetatable(result, quaternion)
-  return result
 end
 
 function quaternion.toangleaxis(q)
-  local s = sqrt(1 - q.w * q.w)
+  local qv = quaternion_raw(q)
+  local s = sqrt(1 - qv[3] * qv[3])
   s = s < 1e-6 and 1 or 1 / s
-
-  return 2 * acos(q.w), q.x * s, q.y * s, q.z * s
+  local axis = qv * s
+  return 2 * acos(qv[3]), axis[0], axis[1], axis[2]
 end
 
 function quaternion.euler(x, y, z)
   local cx, sx = cos(x * .5), sin(x * .5)
   local cy, sy = cos(y * .5), sin(y * .5)
   local cz, sz = cos(z * .5), sin(z * .5)
-
-  local result = {
-    x = cy * sx * cz + sy * cx * sz,
-    y = sy * cx * cz - cy * sx * sz,
-    z = cy * cx * sz - sy * sx * cz,
-    w = cy * cx * cz + sy * sx * sz
-  }
-
-  setmetatable(result, quaternion)
-  return result
+  local a = raw_ctype(
+    cy * sx * cz,
+    sy * cx * cz,
+    cy * cx * sz,
+    cy * cx * cz
+  )
+  local b = raw_ctype(
+    sy * cx * sz,
+    cy * sx * sz,
+    sy * sx * cz,
+    sy * sx * sz
+  )
+  return quaternion_pack(a + b * euler_sign)
 end
 
 function quaternion.toeuler(q)
-  local x, y, z, w = q.x, q.y, q.z, q.w
-  local unit = x * x + y * y + z * z + w * w
+  local qv = quaternion_raw(q)
+  local x, y, z, w = qv[0], qv[1], qv[2], qv[3]
+  local unit = simd.hsum(qv * qv)
   local test = x * w - y * z
   local ax, ay, az
 
@@ -287,57 +277,47 @@ function quaternion.toeuler(q)
 end
 
 function quaternion.between(a, b)
-  local dot = a.x * b.x + a.y * b.y + a.z * b.z
+  local dot = dot3(a, b)
 
   if dot > .99999 or dot < -.99999 then
     return quaternion.identity
   end
 
-  local x = a.y * b.z - a.z * b.y
-  local y = a.z * b.x - a.x * b.z
-  local z = a.x * b.y - a.y * b.x
-  local w = 1 + dot
-
-  local length = sqrt(x * x + y * y + z * z + w * w)
-
-  local result = { x = x / length, y = y / length, z = z / length, w = w / length }
-  setmetatable(result, quaternion)
-  return result
+  local result = simd.insert(cross3raw(a, b), 3, 1 + dot)
+  return quaternion_pack(result / sqrt(simd.hsum(result * result)))
 end
 
 function quaternion.lookdir(dir, up)
   up = up or vector.up
 
-  local fx, fy, fz = -dir.x, -dir.y, -dir.z
-  local length = sqrt(fx * fx + fy * fy + fz * fz)
+  local forward = -vector_raw(dir)
+  local length = sqrt(dot3(forward, forward))
 
   if length == 0 then
     return quaternion.identity
   end
 
-  fx, fy, fz = fx / length, fy / length, fz / length
+  forward = simd.insert(forward / length, 3, 0)
 
-  local rx, ry, rz = up.y * fz - up.z * fy, up.z * fx - up.x * fz, up.x * fy - up.y * fx
-  length = sqrt(rx * rx + ry * ry + rz * rz)
+  local right = cross3raw(up, forward)
+  length = sqrt(dot3(right, right))
 
   if length == 0 then
-    if abs(fx) < .9 then
-      rx, ry, rz = 0, fz, -fy
+    if abs(forward[0]) < .9 then
+      right = raw_ctype(0, forward[2], -forward[1], 0)
     else
-      rx, ry, rz = fz, 0, -fx
+      right = raw_ctype(forward[2], 0, -forward[0], 0)
     end
 
-    length = sqrt(rx * rx + ry * ry + rz * rz)
+    length = sqrt(dot3(right, right))
   end
 
-  rx, ry, rz = rx / length, ry / length, rz / length
+  right = simd.insert(right / length, 3, 0)
+  local upward = cross3raw(forward, right)
 
-  local ux, uy, uz = fy * rz - fz * ry, fz * rx - fx * rz, fx * ry - fy * rx
-
-  local m00, m01, m02 = rx, ry, rz
-  local m10, m11, m12 = ux, uy, uz
-  local m20, m21, m22 = fx, fy, fz
-
+  local m00, m01, m02 = right[0], right[1], right[2]
+  local m10, m11, m12 = upward[0], upward[1], upward[2]
+  local m20, m21, m22 = forward[0], forward[1], forward[2]
   local x, y, z, w
 
   if m22 < 0 then
@@ -374,29 +354,32 @@ function quaternion.lookdir(dir, up)
     end
   end
 
-  local result = { x = x, y = y, z = z, w = w }
-  setmetatable(result, quaternion)
-  return result
+  return quaternion_ctype(x, y, z, w)
 end
 
 function quaternion.direction(q)
-  local x = -2 * q.x * q.z - 2 * q.w * q.y
-  local y = -2 * q.y * q.z + 2 * q.w * q.x
-  local z = -1 + 2 * q.x * q.x + 2 * q.y * q.y
-  return vector(x, y, z)
+  local qv = quaternion_raw(q)
+  local x, y, z, w = qv[0], qv[1], qv[2], qv[3]
+  return vector_cast(raw_ctype(
+    -2 * x * z - 2 * w * y,
+    -2 * y * z + 2 * w * x,
+    -1 + 2 * x * x + 2 * y * y,
+    0
+  ))
 end
 
 function quaternion.slerp(q, r, t)
-  local dot = q.x * r.x + q.y * r.y + q.z * r.z + q.w * r.w
+  local qv = quaternion_raw(q)
+  local rv = quaternion_raw(r)
+  local dot = simd.hsum(qv * rv)
 
   if abs(dot) >= 1 then
     return q
   end
 
-  local x, y, z, w = q.x, q.y, q.z, q.w
-
   if dot < 0 then
-    x, y, z, w, dot = -x, -y, -z, -w, -dot
+    qv = -qv
+    dot = -dot
   end
 
   local halfTheta = acos(dot)
@@ -404,84 +387,83 @@ function quaternion.slerp(q, r, t)
   local s = 1 - t
 
   if abs(sinHalfTheta) < .05 then
-    x = x * s + r.x * t
-    y = y * s + r.y * t
-    z = z * s + r.z * t
-    w = w * s + r.w * t
-
-    local length = sqrt(x * x + y * y + z * z + w * w)
-
-    local result = {
-      x = x / length,
-      y = y / length,
-      z = z / length,
-      w = w / length
-    }
-
-    setmetatable(result, quaternion)
-    return result
+    local result = qv * s + rv * t
+    return quaternion_pack(result / sqrt(simd.hsum(result * result)))
   end
 
   local a = sin(s * halfTheta) / sinHalfTheta
   local b = sin(t * halfTheta) / sinHalfTheta
-
-  local result = {
-    x = x * a + r.x * b,
-    y = y * a + r.y * b,
-    z = z * a + r.z * b,
-    w = w * a + r.w * b
-  }
-
-  setmetatable(result, quaternion)
-  return result
+  return quaternion_pack(qv * a + rv * b)
 end
 
 function quaternion.__mul(q, b)
-  if b.w then
-    local result = {
-      x = q.x * b.w + q.w * b.x + q.y * b.z - q.z * b.y,
-      y = q.y * b.w + q.w * b.y + q.z * b.x - q.x * b.z,
-      z = q.z * b.w + q.w * b.z + q.x * b.y - q.y * b.x,
-      w = q.w * b.w - q.x * b.x - q.y * b.y - q.z * b.z
-    }
+  local qv = quaternion_raw(q)
 
-    setmetatable(result, quaternion)
-    return result
-  else
-    local ux, uy, uz = q.x, q.y, q.z
-    local cx, cy, cz = q.y * b.z - q.z * b.y, q.z * b.x - q.x * b.z, q.x * b.y - q.y * b.x
-
-    local uu = ux * ux + uy * uy + uz * uz
-    local uv = ux * b.x + uy * b.y + uz * b.z
-    local s = q.w * q.w - uu
-
-    local result = {
-      x = b.x * s + ux * 2 * uv + cx * 2 * q.w,
-      y = b.y * s + uy * 2 * uv + cy * 2 * q.w,
-      z = b.z * s + uz * 2 * uv + cz * 2 * q.w
-    }
-
-    setmetatable(result, vector)
-    return result
+  if type(b) == 'cdata' and ffi.typeof(b) == quaternion_ctype then
+    local rv = quaternion_raw(b)
+    local xterm = simd.bxor(simd.shuffle(rv, 3, 2, 1, 0), quaternion_x_sign)
+    local yterm = simd.bxor(simd.shuffle(rv, 2, 3, 0, 1), quaternion_y_sign)
+    local zterm = simd.bxor(simd.shuffle(rv, 1, 0, 3, 2), quaternion_z_sign)
+    local xy = muladd(
+      simd.shuffle(qv, 0, 0, 0, 0),
+      xterm,
+      rv * simd.shuffle(qv, 3, 3, 3, 3)
+    )
+    local yz = muladd(
+      simd.shuffle(qv, 2, 2, 2, 2),
+      zterm,
+      yterm * simd.shuffle(qv, 1, 1, 1, 1)
+    )
+    return quaternion_pack(xy + yz)
+  elseif type(b) == 'cdata' and ffi.typeof(b) == vector_ctype then
+    local bv = vector_raw(b)
+    local x, y, z, w = qv[0], qv[1], qv[2], qv[3]
+    local xx, yy, zz, ww = x * x, y * y, z * z, w * w
+    local xy, xz, yz = x * y, x * z, y * z
+    local wx, wy, wz = w * x, w * y, w * z
+    local column0 = raw_ctype(ww + xx - yy - zz, 2 * (xy + wz), 2 * (xz - wy), 0)
+    local column1 = raw_ctype(2 * (xy - wz), ww - xx + yy - zz, 2 * (yz + wx), 0)
+    local column2 = raw_ctype(2 * (xz + wy), 2 * (yz - wx), ww - xx - yy + zz, 0)
+    local result = column0 * simd.shuffle(bv, 0, 0, 0, 0)
+    result = muladd(column1, simd.shuffle(bv, 1, 1, 1, 1), result)
+    result = muladd(column2, simd.shuffle(bv, 2, 2, 2, 2), result)
+    return vector_cast(result)
   end
+
+  error('quaternion can only multiply another quaternion or vector', 2)
 end
 
 function quaternion.__tostring(q)
-  return ('%f, %f, %f, %f'):format(q.x, q.y, q.z, q.w)
+  return ('%f, %f, %f, %f'):format(q[0], q[1], q[2], q[3])
 end
 
+local quaternion_fields = { x = 0, y = 1, z = 2, w = 3 }
+
+local function quaternion_index(q, key)
+  local lane = quaternion_fields[key]
+  return lane and q[lane] or quaternion[key]
+end
+
+quaternion_ctype = ffi.metatype('lovr_quaternion4', {
+  __index = quaternion_index,
+  __mul = quaternion.__mul,
+  __tostring = quaternion.__tostring
+})
+
 setmetatable(quaternion, {
-  __call = function(self, ...)
-    if ... then
-      if type(...) == 'table' then -- Deprecated
-        return ...
-      else
-        return quaternion.angleaxis(...)
+  __call = function(_, ...)
+    local first = ...
+    if first then
+      if type(first) == 'table' then return first end -- Deprecated
+      if type(first) == 'cdata' and ffi.typeof(first) == quaternion_ctype then
+        return first
       end
+      return quaternion.angleaxis(...)
     else
-      return quaternion.pack(0, 0, 0, 1)
+      return quaternion_ctype(0, 0, 0, 1)
     end
   end
 })
 
-quaternion.identity = quaternion.pack(0, 0, 0, 1)
+quaternion.ctype = quaternion_ctype
+quaternion.identity = quaternion_ctype(0, 0, 0, 1)

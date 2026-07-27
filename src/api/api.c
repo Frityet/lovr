@@ -635,10 +635,27 @@ static void _luax_checkvariant(lua_State* L, int index, Variant* variant, int de
     case LUA_TQUATERNION: {
       const short* q = lua_toquaternion(L, index);
       variant->type = TYPE_QUATERNION;
-      memcpy(variant->quaternion.data, q, 4 * sizeof(int16_t));
+      for (int i = 0; i < 4; i++) {
+        variant->quaternion.data[i] = MAX(q[i] / 32767.f, -1.f);
+      }
       break;
     }
 #endif
+
+    case LUA_TCDATA: {
+      size_t lanes;
+      const float* vector = lua_tofloatvector(L, index, &lanes);
+      if (!vector || lanes < 4) {
+        luaL_error(L, "Bad cdata variant for argument %d: expected a SIMD vector", index);
+      } else if (luax_isquat(L, index)) {
+        variant->type = TYPE_QUATERNION;
+        memcpy(variant->quaternion.data, vector, 4 * sizeof(float));
+      } else {
+        variant->type = TYPE_VECTOR;
+        memcpy(variant->vector.data, vector, 3 * sizeof(float));
+      }
+      break;
+    }
 
     default:
       luaL_error(L, "Bad variant type for argument %d: %s", index, lua_typename(L, type));
@@ -659,8 +676,8 @@ int luax_pushvariant(lua_State* L, Variant* variant) {
     case TYPE_MINISTRING: lua_pushlstring(L, variant->ministring.data, variant->ministring.length); return 1;
     case TYPE_POINTER: lua_pushlightuserdata(L, variant->pointer.value); return 1;
     case TYPE_OBJECT: _luax_pushtype(L, variant->object.type, variant->object.pointer); return 1;
-    case TYPE_VECTOR: for (uint32_t i = 0; i < 3; i++) lua_pushnumber(L, variant->vector.data[i]); return 3;
-    case TYPE_QUATERNION: for (uint32_t i = 0; i < 4; i++) lua_pushnumber(L, MAX(-1.f, variant->quaternion.data[i] / 32767.f)); return 4;
+    case TYPE_VECTOR: luax_pushsimdvec3(L, variant->vector.data); return 1;
+    case TYPE_QUATERNION: luax_pushsimdquat(L, variant->quaternion.data); return 1;
     case TYPE_TABLE:
       lua_newtable(L);
       for (size_t i = 0; i < variant->table.count; i++) {
@@ -676,7 +693,11 @@ int luax_pushvariant(lua_State* L, Variant* variant) {
 void luax_readcolor(lua_State* L, int index, float color[4]) {
   color[0] = color[1] = color[2] = color[3] = 1.f;
 
-  if (lua_istable(L, index)) {
+  size_t lanes;
+  const float* vector = lua_tofloatvector(L, index, &lanes);
+  if (vector && lanes >= 3) {
+    vec3_init(color, vector);
+  } else if (lua_istable(L, index)) {
     if (luax_len(L, index) > 0) {
       for (int i = 1; i <= 4; i++) {
         lua_rawgeti(L, index, i);
@@ -713,6 +734,14 @@ void luax_readcolor(lua_State* L, int index, float color[4]) {
 
 // Like readcolor, but only consumes 1 argument (nil, hex, table, vec3, vec4), useful for table keys
 void luax_optcolor(lua_State* L, int index, float color[4]) {
+  size_t lanes;
+  const float* vector = lua_tofloatvector(L, index, &lanes);
+  if (vector && lanes >= 3) {
+    vec3_init(color, vector);
+    color[3] = 1.f;
+    return;
+  }
+
   switch (lua_type(L, index)) {
     case LUA_TNONE:
     case LUA_TNIL:
@@ -868,7 +897,16 @@ int luax_readvec3(lua_State* L, int index, vec3 v, const char* expected) {
       vec3_init(v, lua_tovector(L, index));
       return index + 1;
 #endif
-    default: return luax_typeerror(L, index, "number, table, or vector");
+    case LUA_TCDATA: {
+      size_t lanes;
+      const float* vector = lua_tofloatvector(L, index, &lanes);
+      if (vector && lanes >= 3) {
+        vec3_init(v, vector);
+        return index + 1;
+      }
+      return luax_typeerror(L, index, "number, table, or vector");
+    }
+    default: return luax_typeerror(L, index, expected ? expected : "number, table, or vector");
   }
 }
 
@@ -923,6 +961,15 @@ int luax_readscale(lua_State* L, int index, vec3 v, int components, const char* 
       vec3_init(v, lua_tovector(L, index));
       return index + 1;
 #endif
+    case LUA_TCDATA: {
+      size_t lanes;
+      const float* vector = lua_tofloatvector(L, index, &lanes);
+      if (vector && lanes >= 3) {
+        vec3_init(v, vector);
+        return index + 1;
+      }
+      return luax_typeerror(L, index, expected ? expected : "nil, number, table, or vector");
+    }
     default: return luax_typeerror(L, index, expected ? expected : "nil, number, table, or vector");
   }
 }
@@ -984,6 +1031,15 @@ int luax_readquat(lua_State* L, int index, quat q, const char* expected) {
       return index + 1;
     }
 #endif
+    case LUA_TCDATA: {
+      size_t lanes;
+      const float* vector = lua_tofloatvector(L, index, &lanes);
+      if (vector && lanes >= 4 && luax_isquat(L, index)) {
+        quat_init(q, (float*) vector);
+        return index + 1;
+      }
+      return luax_typeerror(L, index, expected ? expected : "nil, number, table, or quaternion");
+    }
     default: return luax_typeerror(L, index, expected ? expected : "nil, number, table, or quaternion");
   }
 }
@@ -997,6 +1053,7 @@ int luax_readmat4(lua_State* L, int index, mat4 m, int scaleComponents) {
 #ifdef LOVR_USE_LUAU
     case LUA_TVECTOR:
 #endif
+    case LUA_TCDATA:
     case LUA_TNUMBER:
     case LUA_TTABLE:;
       float T[3], R[4], S[3];
@@ -1036,6 +1093,41 @@ void luax_pushvec3(lua_State* L, float v[3], bool tableArray) {
   }
 }
 
+static void luax_getmathglobal(lua_State* L, const char* name) {
+  lua_getglobal(L, name);
+  if (!lua_isnil(L, -1)) return;
+  lua_pop(L, 1);
+  lua_getglobal(L, "require");
+  lua_pushliteral(L, "lovr.math");
+  lua_call(L, 1, 1);
+  lua_pop(L, 1);
+  lua_getglobal(L, name);
+}
+
+static void luax_pushsimd(lua_State* L, const char* name, const char* registry, const float v[4]) {
+  lua_getfield(L, LUA_REGISTRYINDEX, registry);
+  if (lua_isnil(L, -1)) {
+    lua_pop(L, 1);
+    luax_getmathglobal(L, name);
+    lua_getfield(L, -1, "ctype");
+    lua_remove(L, -2);
+    lua_pushvalue(L, -1);
+    lua_setfield(L, LUA_REGISTRYINDEX, registry);
+  }
+
+  luax_check(L, lua_pushfloatvector(L, -1, v, 4), "Could not create SIMD %s", name);
+  lua_remove(L, -2);
+}
+
+void luax_pushsimdvec3(lua_State* L, float v[3]) {
+  float packed[4] = { v[0], v[1], v[2], 0.f };
+  luax_pushsimd(L, "vector", "_lovr_vector_ctype", packed);
+}
+
+void luax_pushsimdquat(lua_State* L, float q[4]) {
+  luax_pushsimd(L, "quaternion", "_lovr_quaternion_ctype", q);
+}
+
 bool luax_isquat(lua_State* L, int index) {
   if (lua_istable(L, index)) {
     int len = luax_len(L, index);
@@ -1048,6 +1140,14 @@ bool luax_isquat(lua_State* L, int index) {
       lua_pop(L, 1);
       return number;
     }
+  }
+
+  if (lua_type(L, index) == LUA_TCDATA) {
+    index = index > 0 ? index : index + lua_gettop(L) + 1;
+    lua_getfield(L, index, "w");
+    bool number = lua_type(L, -1) == LUA_TNUMBER;
+    lua_pop(L, 1);
+    return number;
   }
 
 #ifdef LOVR_USE_LUAU

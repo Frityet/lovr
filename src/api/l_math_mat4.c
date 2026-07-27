@@ -202,6 +202,8 @@ static int l_lovrMat4Mul(lua_State* L) {
       if (lua_getmetatable(L, 2)) {
         lua_setmetatable(L, -2);
       }
+    } else if (lua_type(L, 2) == LUA_TCDATA) {
+      luax_pushsimdvec3(L, v);
     } else {
 #ifdef LOVR_USE_LUAU
       lua_pushvector(L, v[0], v[1], v[2]);
@@ -368,6 +370,14 @@ static int l_lovrMat4__mul(lua_State* L) {
     if (lua_getmetatable(L, 2)) {
       lua_setmetatable(L, -2);
     }
+    return 1;
+  }
+
+  if (lua_type(L, 2) == LUA_TCDATA) {
+    float v[3];
+    luax_readvec3(L, 2, v, NULL);
+    mat4_mulPoint(lovrMat4GetData(self), v);
+    luax_pushsimdvec3(L, v);
     return 1;
   }
 

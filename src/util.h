@@ -213,7 +213,7 @@ typedef union Variant {
   struct { VariantType type; uint8_t length; char data[11]; } ministring;
   struct { VariantType _type; ObjectType type; void* pointer; } object;
   struct { VariantType type; float data[3]; } vector;
-  struct { VariantType type; int16_t data[4]; } quaternion;
+  struct { VariantType type; float data[4]; } quaternion;
   struct { VariantType type; uint32_t count; union Variant* pairs; } table;
 } Variant;
 

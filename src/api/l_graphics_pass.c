@@ -869,6 +869,8 @@ static uint32_t luax_getvertexcount(lua_State* L, int index) {
         lua_pop(L, 1);
         return luax_len(L, index) / (innerType == LUA_TNUMBER ? 3 : 1);
       }
+    case LUA_TCDATA:
+      return lua_gettop(L) - index + 1;
 #ifdef LOVR_USE_LUAU
     case LUA_TVECTOR:
       return lua_gettop(L) - index + 1;
@@ -906,6 +908,13 @@ static void luax_readvertices(lua_State* L, int index, float* vertices, uint32_t
             *vertices++ = luax_tofloat(L, -1);
             lua_pop(L, 1);
           }
+        } else if (innerType == LUA_TCDATA) {
+          for (uint32_t i = 0; i < count; i++) {
+            lua_rawgeti(L, index, i + 1);
+            luax_readvec3(L, -1, vertices, NULL);
+            vertices += 3;
+            lua_pop(L, 1);
+          }
 #ifdef LOVR_USE_LUAU
         } else if (innerType == LUA_TVECTOR) {
           for (uint32_t i = 0; i < count; i++) {
@@ -940,6 +949,12 @@ static void luax_readvertices(lua_State* L, int index, float* vertices, uint32_t
             lua_pop(L, 4);
           }
         }
+      }
+      break;
+    case LUA_TCDATA:
+      for (uint32_t i = 0; i < count; i++) {
+        luax_readvec3(L, index + i, vertices, NULL);
+        vertices += 3;
       }
       break;
 #ifdef LOVR_USE_LUAU
@@ -1046,7 +1061,11 @@ static bool luax_checkendpoints(lua_State* L, int index, float transform[16], bo
 #ifdef LOVR_USE_LUAU
   if (!lua_isvector(L, index + 0) || !lua_isvector(L, index + 1)) return false;
 #else
-  if (!lua_istable(L, index + 0) || !lua_istable(L, index + 1)) return false;
+  size_t lanes1, lanes2;
+  bool vector1 = lua_tofloatvector(L, index + 0, &lanes1) && lanes1 >= 3;
+  bool vector2 = lua_tofloatvector(L, index + 1, &lanes2) && lanes2 >= 3;
+  if (!(lua_istable(L, index + 0) || vector1) ||
+      !(lua_istable(L, index + 1) || vector2)) return false;
 #endif
   float v[3], u[3];
   luax_readvec3(L, index + 0, v, NULL);
