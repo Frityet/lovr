@@ -1,4 +1,112 @@
 group('data', function()
+  group('DataArray', function()
+    local ffi = require 'ffi'
+
+    ffi.cdef[[
+      typedef struct {
+        float position[4];
+        uint32_t material;
+        uint32_t padding[3];
+      } lovr_test_particle;
+    ]]
+
+    test('owned typed storage', function()
+      local array = lovr.data.newArray('float', 4)
+      expect(type(array)).to.equal('cdata')
+      expect(array:type()).to.equal('DataArray')
+      expect(#array).to.equal(4)
+      expect(array:getCount()).to.equal(4)
+      expect(array:getStride()).to.equal(4)
+      expect(array:getSize()).to.equal(16)
+      expect(tonumber(ffi.cast('uintptr_t', array.data)) % 32).to.equal(0)
+
+      array[1] = 1.25
+      array[4] = -9.5
+      expect(array[1]).to.equal(1.25)
+      expect(array[4]).to.equal(-9.5)
+      expect(lovr.data.isArray(array)).to.equal(true)
+      expect(lovr.data.isSpan(array)).to.equal(false)
+    end)
+
+    test('arbitrary FFI structs', function()
+      local array = lovr.data.newArray('lovr_test_particle', 2)
+      local particles = array:getPointer()
+      particles[0].position[0] = 1
+      particles[0].position[1] = 2
+      particles[0].position[2] = 3
+      particles[0].position[3] = 4
+      particles[0].material = 17
+      particles[1].material = 23
+
+      expect(array:getStride()).to.equal(32)
+      expect(array[1].position[2]).to.equal(3)
+      expect(array[1].material).to.equal(17)
+      expect(array[2].material).to.equal(23)
+    end)
+
+    test('SIMD vector elements', function()
+      local array = lovr.data.newArray(vector.ctype, 2)
+      array[1] = vector.pack(1, 2, 3)
+      array[2] = vector.pack(4, 5, 6)
+      expect(array:getStride()).to.equal(16)
+      expect(array[1]).to.equal(vector.pack(1, 2, 3))
+      expect(array[2]).to.equal(vector.pack(4, 5, 6))
+    end)
+
+    test('spans retain and mutate their owner', function()
+      local span
+      do
+        local array = lovr.data.newArray('uint32_t', 4, { 10, 20, 30, 40 })
+        span = array:span(2, 2)
+      end
+
+      collectgarbage()
+      collectgarbage()
+      expect(span:type()).to.equal('DataSpan')
+      expect(#span).to.equal(2)
+      expect(span[1]).to.equal(20)
+      span[2] = 99
+      expect(span[2]).to.equal(99)
+      expect(lovr.data.isSpan(span)).to.equal(true)
+    end)
+
+    test('external FFI array spans', function()
+      local source = ffi.new('uint32_t[4]', 5, 6, 7, 8)
+      local span = lovr.data.newSpan(source, 'uint32_t', 2, 2)
+      source = nil
+      collectgarbage()
+      collectgarbage()
+      expect(span[1]).to.equal(6)
+      expect(span[2]).to.equal(7)
+    end)
+
+    test('copy, clear, and bounds', function()
+      local array = lovr.data.newArray('int32_t', 4, { 1, 2, 3, 4 })
+      array:copy(array, 2, 1, 3)
+      expect(array[1]).to.equal(1)
+      expect(array[2]).to.equal(1)
+      expect(array[3]).to.equal(2)
+      expect(array[4]).to.equal(3)
+
+      array:copy(array, 1, 2, 3)
+      expect(array[1]).to.equal(1)
+      expect(array[2]).to.equal(2)
+      expect(array[3]).to.equal(3)
+      expect(array[4]).to.equal(3)
+
+      array:clear(2, 2)
+      expect(array[2]).to.equal(0)
+      expect(array[3]).to.equal(0)
+
+      expect(function() return array[0] end).to.fail()
+      expect(function() array:span(4, 2) end).to.fail()
+      expect(function() lovr.data.newArray('void', 1) end).to.fail()
+      expect(function()
+        lovr.data.newSpan(ffi.cast('float*', 0), 'float', 1)
+      end).to.fail()
+    end)
+  end)
+
   group('Blob', function()
     test(':getName', function()
       -- Test that Blob copies its name instead of relying on Lua string staying live

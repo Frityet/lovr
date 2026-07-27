@@ -6,7 +6,7 @@
 #ifdef _WIN32
 #define LOVR_FFI_EXPORT __declspec(dllexport)
 #else
-#define LOVR_FFI_EXPORT __attribute__((visibility("default")))
+#define LOVR_FFI_EXPORT __attribute__((used, visibility("default")))
 #endif
 
 LOVR_FFI_EXPORT void lovrMathMat4Invert(float* matrix) {

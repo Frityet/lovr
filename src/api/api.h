@@ -9,6 +9,14 @@
 
 union Variant;
 
+typedef struct {
+  void* data;
+  size_t size;
+  uint32_t length;
+  uint32_t stride;
+  uint32_t element;
+} DataSpanView;
+
 // Enums
 
 typedef struct {
@@ -165,12 +173,20 @@ bool luax_isquat(lua_State* L, int index);
 struct Blob;
 struct Image;
 struct ModelMetadata;
+bool luax_todataspan(lua_State* L, int index, DataSpanView* view);
 struct Blob* luax_readblob(lua_State* L, int index, const char* debug);
 struct Image* luax_checkimage(lua_State* L, int index);
 uint32_t luax_checkcodepoint(lua_State* L, int index);
 uint32_t luax_checkanimationindex(lua_State* L, int index, struct ModelMetadata* model);
 uint32_t luax_checkmaterialindex(lua_State* L, int index, struct ModelMetadata* model);
 uint32_t luax_checknodeindex(lua_State* L, int index, struct ModelMetadata* model);
+#else
+static inline bool luax_todataspan(lua_State* L, int index, DataSpanView* view) {
+  (void) L;
+  (void) index;
+  (void) view;
+  return false;
+}
 #endif
 
 #ifndef LOVR_DISABLE_FILESYSTEM

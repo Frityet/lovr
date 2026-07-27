@@ -5,6 +5,15 @@ cmake_policy(SET CMP0091 NEW)
 set(CMAKE_OSX_DEPLOYMENT_TARGET "11.0" CACHE STRING "Minimum macOS deployment version")
 project(lovr)
 
+# Single-config generators otherwise default to an unoptimized build, which is
+# especially misleading for this LuaJIT-only fork because JIT-compiled Lua is
+# optimized while the engine-side C/C++ code is not.
+if(NOT CMAKE_CONFIGURATION_TYPES AND NOT CMAKE_BUILD_TYPE)
+  set(CMAKE_BUILD_TYPE RelWithDebInfo CACHE STRING "Build type" FORCE)
+  set_property(CACHE CMAKE_BUILD_TYPE PROPERTY STRINGS Debug Release RelWithDebInfo MinSizeRel)
+  message(STATUS "No CMAKE_BUILD_TYPE selected; defaulting to RelWithDebInfo")
+endif()
+
 # Modules
 option(LOVR_ENABLE_AUDIO "Enable the audio module" ON)
 option(LOVR_ENABLE_DATA "Enable the data module" ON)
@@ -39,6 +48,10 @@ option(LOVR_SYSTEM_OPENXR "Use the system-provided OpenXR" OFF)
 option(LOVR_SANITIZE "Enable Address Sanitizer" OFF)
 option(LOVR_PROFILE "Enable Tracy integration" OFF)
 
+# Performance
+option(LOVR_NATIVE_SIMD "Tune LÖVR and Jolt for the build machine" OFF)
+option(LOVR_X86_AVX2 "Require AVX2/FMA and enable the matching Jolt code paths" OFF)
+
 # Packaging
 option(LOVR_BUILD_EXE "Build an executable (or an apk on Android)" ON)
 option(LOVR_BUILD_SHARED "Build a shared library (takes precedence over LOVR_BUILD_EXE)" OFF)
@@ -63,6 +76,28 @@ elseif(UNIX)
   find_package(PkgConfig)
   if(NOT APPLE)
     set(CMAKE_SKIP_RPATH OFF)
+  endif()
+endif()
+
+if(LOVR_NATIVE_SIMD)
+  if(MSVC)
+    message(STATUS "LOVR_NATIVE_SIMD uses the selected MSVC architecture baseline")
+  elseif(CMAKE_C_COMPILER_ID MATCHES "Clang|GNU")
+    list(APPEND LOVR_PERFORMANCE_COMPILE_OPTIONS -march=native)
+  else()
+    message(WARNING "LOVR_NATIVE_SIMD is not supported by ${CMAKE_C_COMPILER_ID}")
+  endif()
+endif()
+
+if(LOVR_X86_AVX2)
+  if(NOT CMAKE_SYSTEM_PROCESSOR MATCHES "^(x86_64|AMD64|amd64|i.86)$")
+    message(FATAL_ERROR "LOVR_X86_AVX2 requires an x86 processor")
+  elseif(MSVC)
+    list(APPEND LOVR_PERFORMANCE_COMPILE_OPTIONS /arch:AVX2)
+  elseif(CMAKE_C_COMPILER_ID MATCHES "Clang|GNU")
+    list(APPEND LOVR_PERFORMANCE_COMPILE_OPTIONS -mavx2 -mfma)
+  else()
+    message(FATAL_ERROR "LOVR_X86_AVX2 is not supported by ${CMAKE_C_COMPILER_ID}")
   endif()
 endif()
 
@@ -123,9 +158,12 @@ if(LOVR_ENABLE_PHYSICS)
   set(DEBUG_RENDERER_IN_DEBUG_AND_RELEASE OFF CACHE BOOL "")
   set(PROFILER_IN_DEBUG_AND_RELEASE OFF CACHE BOOL "")
   set(ENABLE_OBJECT_STREAM OFF CACHE BOOL "")
-  set(USE_AVX OFF CACHE BOOL "")
-  set(USE_AVX2 OFF CACHE BOOL "")
+  set(USE_AVX ${LOVR_X86_AVX2} CACHE BOOL "" FORCE)
+  set(USE_AVX2 ${LOVR_X86_AVX2} CACHE BOOL "" FORCE)
+  set(USE_FMADD ON CACHE BOOL "" FORCE)
   add_subdirectory(deps/joltc jolt EXCLUDE_FROM_ALL)
+  target_compile_options(Jolt PRIVATE ${LOVR_PERFORMANCE_COMPILE_OPTIONS})
+  target_compile_options(joltc PRIVATE ${LOVR_PERFORMANCE_COMPILE_OPTIONS})
   set_target_properties(Jolt joltc PROPERTIES MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>DLL")
   set(LOVR_JOLT joltc)
 endif()
@@ -149,6 +187,27 @@ if(LOVR_USE_STEAM_AUDIO AND LOVR_ENABLE_AUDIO)
   set(STEAMAUDIO_ENABLE_RADEONRAYS OFF CACHE BOOL "")
   set(STEAMAUDIO_ENABLE_TRUEAUDIONEXT OFF CACHE BOOL "")
   add_subdirectory(deps/phonon/core phonon)
+  if(APPLE AND LOVR_X86_AVX2)
+    function(lovr_set_osx_architecture directory architecture)
+      get_property(targets DIRECTORY "${directory}" PROPERTY BUILDSYSTEM_TARGETS)
+      foreach(target IN LISTS targets)
+        get_target_property(type "${target}" TYPE)
+        if(NOT type STREQUAL "UTILITY" AND NOT type STREQUAL "INTERFACE_LIBRARY")
+          set_property(TARGET "${target}" PROPERTY OSX_ARCHITECTURES "${architecture}")
+        endif()
+      endforeach()
+
+      get_property(subdirectories DIRECTORY "${directory}" PROPERTY SUBDIRECTORIES)
+      foreach(subdirectory IN LISTS subdirectories)
+        lovr_set_osx_architecture("${subdirectory}" "${architecture}")
+      endforeach()
+    endfunction()
+
+    # Steam Audio defaults to a universal macOS build.  The AVX2 preset is
+    # deliberately x86-only, so avoid compiling an unused and incompatible
+    # arm64 slice in its dependency tree.
+    lovr_set_osx_architecture("${PROJECT_SOURCE_DIR}/deps/phonon/core" "x86_64")
+  endif()
   set(LOVR_PHONON phonon)
   set(BUILD_SHARED_LIBS OFF)
 endif()
@@ -236,6 +295,7 @@ else()
 endif()
 
 set_target_properties(lovr PROPERTIES C_STANDARD 11 C_STANDARD_REQUIRED ON)
+target_compile_options(lovr PRIVATE ${LOVR_PERFORMANCE_COMPILE_OPTIONS})
 
 target_include_directories(lovr PRIVATE
   ${LOVR_INCLUDES}
@@ -551,7 +611,13 @@ if(NOT EMSCRIPTEN)
 endif()
 
 # Resources
-file(GLOB LOVR_RESOURCES "etc/*.ttf" "etc/*.lua" "etc/shaders/*.glsl" "src/api/l_math.lua")
+file(GLOB LOVR_RESOURCES
+  "etc/*.ttf"
+  "etc/*.lua"
+  "etc/shaders/*.glsl"
+  "src/api/l_data.lua"
+  "src/api/l_math.lua"
+)
 foreach(path ${LOVR_RESOURCES})
 
   # Turn the absolute path into a C variable like etc_boot_lua

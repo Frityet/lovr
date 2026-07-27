@@ -724,6 +724,7 @@ static int l_lovrGraphicsNewBuffer(lua_State* L) {
   BufferInfo info = { 0 };
   DataLayout layout = LAYOUT_PACKED;
   bool hasData = false;
+  DataSpanView span;
   Mat4* matrix = NULL;
   Blob* blob = NULL;
 
@@ -830,7 +831,9 @@ static int l_lovrGraphicsNewBuffer(lua_State* L) {
           break;
         case LUA_TCDATA: {
           uint32_t arrayLength = 0;
-          bool array = luax_tomat4array(L, 2, &arrayLength) != NULL;
+          bool array = luax_todataspan(L, 2, &span);
+          if (array) arrayLength = span.length;
+          array = array || luax_tomat4array(L, 2, &arrayLength) != NULL;
           array = array || luax_tofloatvectorarray(L, 2, &arrayLength) != NULL;
           format->length = array ? arrayLength : 0;
           hasData = true;

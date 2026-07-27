@@ -7,6 +7,14 @@
 #include "util.h"
 #include <stdlib.h>
 #include <string.h>
+#ifndef LOVR_USE_LUAU
+#include "l_data.lua.h"
+#endif
+
+#define LOVR_DATA_ARRAY_MAGIC 0x4c444152u
+#define LOVR_DATA_SPAN_MAGIC 0x4c445350u
+#define LOVR_DATA_HEADER_SIZE 32u
+#define LOVR_DATA_ALIGNMENT 32u
 
 StringEntry lovrAnimationProperty[] = {
   [PROP_TRANSLATION] = ENTRY("translation"),
@@ -33,6 +41,96 @@ StringEntry lovrSmoothMode[] = {
   [SMOOTH_CUBIC] = ENTRY("cubic"),
   { 0 }
 };
+
+#ifndef LOVR_USE_LUAU
+static void* luax_tocachedcdata(lua_State* L, int index, const char* registry, size_t* size) {
+  if (lua_type(L, index) != LUA_TCDATA) {
+    return NULL;
+  }
+
+  index = index > 0 ? index : index + lua_gettop(L) + 1;
+  lua_getfield(L, LUA_REGISTRYINDEX, registry);
+  if (lua_isnil(L, -1)) {
+    lua_pop(L, 1);
+    return NULL;
+  }
+
+  void* data = lua_tocdataof(L, index, -1, size);
+  lua_pop(L, 1);
+  return data;
+}
+#endif
+
+bool luax_todataspan(lua_State* L, int index, DataSpanView* view) {
+#ifdef LOVR_USE_LUAU
+  UNUSED(L);
+  UNUSED(index);
+  UNUSED(view);
+  return false;
+#else
+  size_t cdataSize;
+  uint8_t* payload = luax_tocachedcdata(L, index, "_lovr_data_array_ctype", &cdataSize);
+
+  if (payload) {
+    uint32_t header[8];
+    if (cdataSize < sizeof(header)) return false;
+    memcpy(header, payload, sizeof(header));
+
+    uint64_t bytes = (uint64_t) header[1] * header[2];
+    if (bytes > UINT32_MAX) return false;
+    size_t storage = ALIGN((size_t) bytes, LOVR_DATA_ALIGNMENT);
+    if (header[0] != LOVR_DATA_ARRAY_MAGIC ||
+        header[2] == 0 ||
+        header[3] != bytes ||
+        header[5] != 0 ||
+        header[6] != 0 ||
+        header[7] != 0 ||
+        cdataSize != LOVR_DATA_HEADER_SIZE + storage) {
+      return false;
+    }
+
+    *view = (DataSpanView) {
+      .data = payload + LOVR_DATA_HEADER_SIZE,
+      .size = (size_t) bytes,
+      .length = header[1],
+      .stride = header[2],
+      .element = header[4]
+    };
+    return true;
+  }
+
+  payload = luax_tocachedcdata(L, index, "_lovr_data_span_ctype", &cdataSize);
+  if (payload) {
+    uint32_t header[6];
+    size_t expectedSize = ALIGN(sizeof(header) + sizeof(void*), sizeof(void*));
+    if (cdataSize != expectedSize) return false;
+    memcpy(header, payload, sizeof(header));
+
+    void* data;
+    memcpy(&data, payload + sizeof(header), sizeof(data));
+    uint64_t bytes = (uint64_t) header[1] * header[2];
+    if (header[0] != LOVR_DATA_SPAN_MAGIC ||
+        header[2] == 0 ||
+        bytes > UINT32_MAX ||
+        header[3] != bytes ||
+        header[5] != 0 ||
+        (!data && bytes > 0)) {
+      return false;
+    }
+
+    *view = (DataSpanView) {
+      .data = data,
+      .size = (size_t) bytes,
+      .length = header[1],
+      .stride = header[2],
+      .element = header[4]
+    };
+    return true;
+  }
+
+  return false;
+#endif
+}
 
 // Must be released when done
 Image* luax_checkimage(lua_State* L, int index) {
@@ -289,5 +387,17 @@ int luaopen_lovr_data(lua_State* L) {
   luax_registertype(L, Rasterizer);
   luax_registertype(L, Sound);
   float16Init();
+
+#ifndef LOVR_USE_LUAU
+  if (!luaL_loadbuffer(L, (const char*) src_api_l_data_lua, src_api_l_data_lua_len, "=data")) {
+    lua_pushvalue(L, -2);
+    lua_call(L, 1, 2);
+    lua_setfield(L, LUA_REGISTRYINDEX, "_lovr_data_span_ctype");
+    lua_setfield(L, LUA_REGISTRYINDEX, "_lovr_data_array_ctype");
+  } else {
+    return lua_error(L);
+  }
+#endif
+
   return 1;
 }

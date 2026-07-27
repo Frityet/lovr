@@ -96,7 +96,7 @@ static bool luax_pushfielderror(lua_State* L, int index, const DataField* field,
   const char* expected;
   if (arr && field->length > 0) {
     kind = "array";
-    expected = "table";
+    expected = "table, DataArray, or DataSpan";
   } else if (field->fieldCount > 0) {
     kind = "struct";
     expected = "table";
@@ -298,6 +298,16 @@ static bool luax_checkstruct(lua_State* L, int index, const DataField* structure
 }
 
 static bool luax_checkarray(lua_State* L, int index, int start, int count, const DataField* array, char* data) {
+  DataSpanView span;
+  if (luax_todataspan(L, index, &span)) {
+    luax_fieldcheck(L, span.stride == array->stride, index, array, true);
+    luax_fieldcheck(L, start >= 1 && (uint64_t) start <= (uint64_t) span.length + 1, index, array, true);
+    uint32_t available = span.length - (uint32_t) (start - 1);
+    if ((uint32_t) count > available) count = (int) available;
+    memcpy(data, (char*) span.data + (start - 1) * span.stride, count * span.stride);
+    return true;
+  }
+
   uint32_t sourceLength;
   float* matrices = luax_tomat4array(L, index, &sourceLength);
   if (matrices) {
@@ -412,6 +422,13 @@ bool luax_checkbufferdata(lua_State* L, int index, const DataField* field, char*
 
   if (field->length > 0) {
     return luax_checkarray(L, index, 1, (int) field->length, field, data);
+  }
+
+  DataSpanView span;
+  if (luax_todataspan(L, index, &span)) {
+    luax_fieldcheck(L, span.length > 0 && span.stride == field->stride, index, field, false);
+    memcpy(data, span.data, field->stride);
+    return true;
   } else if (field->fieldCount > 0) {
     return luax_checkstruct(L, index, field, data);
   } else if (type == LUA_TNUMBER) {
@@ -682,6 +699,8 @@ static int l_lovrBufferSetData(lua_State* L) {
   Buffer* buffer = luax_checktype(L, 1, Buffer);
   const BufferInfo* info = lovrBufferGetInfo(buffer);
   const DataField* format = info->format;
+  DataSpanView span;
+  bool spanData = luax_todataspan(L, 2, &span);
 
   Blob* blob = luax_totype(L, 2, Blob);
 
@@ -715,12 +734,29 @@ static int l_lovrBufferSetData(lua_State* L) {
     return 0;
   }
 
+  if (spanData && !format) {
+    uint32_t dstOffset = luax_optu32(L, 3, 0);
+    uint32_t srcOffset = luax_optu32(L, 4, 0);
+    luax_check(L, dstOffset < info->size, "Buffer offset is bigger than the size of the Buffer");
+    luax_check(L, srcOffset < span.size, "DataSpan offset is bigger than the size of the DataSpan");
+    uint32_t limit = (uint32_t) MIN(info->size - dstOffset, span.size - srcOffset);
+    uint32_t extent = luax_optu32(L, 5, limit);
+    luax_check(L, extent <= info->size - dstOffset, "Buffer copy range exceeds the size of the target Buffer");
+    luax_check(L, extent <= span.size - srcOffset, "Buffer copy range exceeds the size of the DataSpan");
+    void* data = lovrBufferSetData(buffer, dstOffset, extent);
+    luax_assert(L, data);
+    memcpy(data, (char*) span.data + srcOffset, extent);
+    lovrBufferFlush(buffer);
+    return 0;
+  }
+
   if (format) {
     bool success;
 
     if (format->length > 0) {
-      uint32_t ffiLength = 0;
-      bool ffiArray = luax_tomat4array(L, 2, &ffiLength) != NULL;
+      uint32_t ffiLength = spanData ? span.length : 0;
+      bool ffiArray = spanData;
+      ffiArray = ffiArray || luax_tomat4array(L, 2, &ffiLength) != NULL;
       ffiArray = ffiArray || luax_tofloatvectorarray(L, 2, &ffiLength) != NULL;
 
       if (!lua_istable(L, 2) && !ffiArray) {

@@ -90,6 +90,19 @@ cmake ..
 cmake --build .
 ```
 
+Single-config generators default to an optimized `RelWithDebInfo` build.  The
+repository also provides explicit presets:
+
+```console
+cmake --preset release
+cmake --build --preset release
+```
+
+Use `profile` for an optimized Tracy build, `native` to tune LÖVR and Jolt for
+the current machine, or `native-avx2` for an x86 build that also enables the
+AVX2/FMA paths in Jolt.  Presets require CMake 3.21 or newer; the manual build
+flow above continues to use the project's normal minimum CMake version.
+
 See the [Compiling Guide](https://lovr.org/docs/Compiling) for more info.
 
 Testing

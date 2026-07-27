@@ -58,6 +58,58 @@ group('graphics', function()
       expect(buffer:getData()).to.equal({ 1, 2, 3, 4, 5, 6, 7, 8 })
     end)
 
+    test('format: generic DataArray', function()
+      local ffi = require 'ffi'
+      ffi.cdef[[
+        typedef struct {
+          float position[4];
+          float color[4];
+        } lovr_test_buffer_particle;
+      ]]
+
+      local particles = lovr.data.newArray('lovr_test_buffer_particle', 3)
+      local data = particles:getPointer()
+      for i = 0, 2 do
+        for lane = 0, 3 do
+          data[i].position[lane] = i * 10 + lane + 1
+          data[i].color[lane] = i * 10 + lane + 5
+        end
+      end
+
+      buffer = lovr.graphics.newBuffer({
+        { 'position', 'vec4' },
+        { 'color', 'vec4' }
+      }, particles)
+
+      expect(buffer:getLength()).to.equal(3)
+      expect(buffer:getStride()).to.equal(32)
+      expect(buffer:getData()).to.equal({
+        { position = { 1, 2, 3, 4 }, color = { 5, 6, 7, 8 } },
+        { position = { 11, 12, 13, 14 }, color = { 15, 16, 17, 18 } },
+        { position = { 21, 22, 23, 24 }, color = { 25, 26, 27, 28 } }
+      })
+
+      data[1].position[0] = 99
+      buffer:setData(particles:span(2, 1), 3)
+      expect(buffer:getData(3, 1)).to.equal({
+        { position = { 99, 12, 13, 14 }, color = { 15, 16, 17, 18 } }
+      })
+    end)
+
+    test('format: DataArray scalar and stride validation', function()
+      local values = lovr.data.newArray('float', 3, { .5, .25, .125 })
+      buffer = lovr.graphics.newBuffer('float', values)
+      expect(buffer:getLength()).to.equal(3)
+      expect(buffer:getData()).to.equal({ .5, .25, .125 })
+
+      values[2] = .75
+      buffer:setData(values, 2, 2, 1)
+      expect(buffer:getData()).to.equal({ .5, .75, .125 })
+
+      local wrongStride = lovr.data.newArray('vec4', 1)
+      expect(function() buffer:setData(wrongStride) end).to.fail()
+    end)
+
     test('format: matrix', function()
       local values = {}
       for i = 1, 16 do values[i] = i end
@@ -301,6 +353,19 @@ group('graphics', function()
       buffer = lovr.graphics.newBuffer('int')
       blob = lovr.data.newBlob(4)
       buffer:setData(blob)
+    end)
+
+    test(':setData with DataSpan bytes', function()
+      buffer = lovr.graphics.newBuffer(8)
+      local bytes = lovr.data.newArray('uint8_t', 4, { 11, 22, 33, 44 })
+      buffer:setData(bytes:span(2, 2), 3)
+
+      local readback = buffer:newReadback()
+      readback:wait()
+      local blob = readback:getBlob()
+      expect(blob:getU8(3)).to.equal(22)
+      expect(blob:getU8(4)).to.equal(33)
+      expect(function() buffer:setData(bytes, 7, 0, 2) end).to.fail()
     end)
 
     test(':setData with normalized data', function()

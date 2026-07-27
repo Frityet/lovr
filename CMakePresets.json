@@ -1,0 +1,70 @@
+{
+  "version": 3,
+  "cmakeMinimumRequired": {
+    "major": 3,
+    "minor": 21,
+    "patch": 0
+  },
+  "configurePresets": [
+    {
+      "name": "release",
+      "displayName": "Release",
+      "description": "Portable optimized build",
+      "binaryDir": "${sourceDir}/build/release",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release"
+      }
+    },
+    {
+      "name": "profile",
+      "displayName": "Profile",
+      "description": "Optimized build with symbols and Tracy instrumentation",
+      "binaryDir": "${sourceDir}/build/profile",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "RelWithDebInfo",
+        "LOVR_BUILD_WITH_SYMBOLS": true,
+        "LOVR_PROFILE": true
+      }
+    },
+    {
+      "name": "native",
+      "displayName": "Native",
+      "description": "Release build tuned for the current machine with interprocedural optimization",
+      "binaryDir": "${sourceDir}/build/native",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release",
+        "CMAKE_INTERPROCEDURAL_OPTIMIZATION": true,
+        "LOVR_NATIVE_SIMD": true
+      }
+    },
+    {
+      "name": "native-avx2",
+      "displayName": "Native AVX2",
+      "description": "Native x86 release build with AVX2/FMA enabled in LÖVR and Jolt",
+      "inherits": "native",
+      "binaryDir": "${sourceDir}/build/native-avx2",
+      "cacheVariables": {
+        "CMAKE_OSX_ARCHITECTURES": "x86_64",
+        "LOVR_X86_AVX2": true
+      }
+    }
+  ],
+  "buildPresets": [
+    {
+      "name": "release",
+      "configurePreset": "release"
+    },
+    {
+      "name": "profile",
+      "configurePreset": "profile"
+    },
+    {
+      "name": "native",
+      "configurePreset": "native"
+    },
+    {
+      "name": "native-avx2",
+      "configurePreset": "native-avx2"
+    }
+  ]
+}
