@@ -66,6 +66,16 @@ local function simdComposeOperator(n)
   return value[1] + value[13]
 end
 
+local function simdComposeOutput(n)
+  local value = mat4()
+  local output = mat4()
+  for _ = 1, n do
+    mat4.multiply(value, composition, output)
+    value, output = output, value
+  end
+  return value[1] + value[13]
+end
+
 local rotation = quaternion(.0001, .2, .7, -.4)
 
 local function nativeRotate(n)
@@ -117,6 +127,67 @@ local function ffiInvert(n)
   return value[1] + value[16]
 end
 
+local decomposition = mat4()
+  :translate(1, 2, 3)
+  :rotate(quaternion(1.1, .2, .7, -.4))
+  :scale(2, 3, 4)
+
+local function nativeOrientation(n)
+  local result = 0
+  for _ = 1, n do
+    local angle, x, y, z = native.getOrientation(decomposition)
+    result = result + angle + x + y + z
+  end
+  return result
+end
+
+local function simdOrientation(n)
+  local result = 0
+  for _ = 1, n do
+    local angle, x, y, z = decomposition:getOrientation()
+    result = result + angle + x + y + z
+  end
+  return result
+end
+
+local function nativePose(n)
+  local result = 0
+  for _ = 1, n do
+    local x, y, z, angle, ax, ay, az = native.getPose(decomposition)
+    result = result + x + y + z + angle + ax + ay + az
+  end
+  return result
+end
+
+local function simdPose(n)
+  local result = 0
+  for _ = 1, n do
+    local x, y, z, angle, ax, ay, az = decomposition:getPose()
+    result = result + x + y + z + angle + ax + ay + az
+  end
+  return result
+end
+
+local function nativeUnpack(n)
+  local result = 0
+  for _ = 1, n do
+    local a, b, c, d, e, f, g, h, i, j, k, l, m, o, p, q =
+      native.unpack(decomposition, true)
+    result = result + a + b + c + d + e + f + g + h + i + j + k + l + m + o + p + q
+  end
+  return result
+end
+
+local function simdUnpack(n)
+  local result = 0
+  for _ = 1, n do
+    local a, b, c, d, e, f, g, h, i, j, k, l, m, o, p, q =
+      decomposition:unpack(true)
+    result = result + a + b + c + d + e + f + g + h + i + j + k + l + m + o + p + q
+  end
+  return result
+end
+
 local function measure(name, fn, iterations)
   fn(10000)
   local best = math.huge
@@ -143,11 +214,18 @@ function lovr.load()
   measure('Lua C API compose', nativeCompose, iterations)
   measure('SIMD Lua compose', simdCompose, iterations)
   measure('SIMD Lua compose op', simdComposeOperator, iterations)
+  measure('SIMD compose output', simdComposeOutput, iterations)
   measure('Lua C API rotate', nativeRotate, iterations)
   measure('SIMD Lua rotate', simdRotate, iterations)
   measure('Lua C API transpose', nativeTranspose, iterations)
   measure('SIMD Lua transpose', simdTranspose, iterations)
   measure('Lua C API invert', nativeInvert, iterations)
   measure('FFI C invert', ffiInvert, iterations)
+  measure('Lua C API orientation', nativeOrientation, iterations)
+  measure('SIMD Lua orientation', simdOrientation, iterations)
+  measure('Lua C API pose', nativePose, iterations)
+  measure('SIMD Lua pose', simdPose, iterations)
+  measure('Lua C API unpack raw', nativeUnpack, iterations)
+  measure('SIMD Lua unpack raw', simdUnpack, iterations)
   lovr.event.quit()
 end

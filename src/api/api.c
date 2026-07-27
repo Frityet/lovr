@@ -1156,6 +1156,44 @@ float* luax_checkmat4(lua_State* L, int index) {
   return matrix;
 }
 
+static float* luax_tofloatarray(lua_State* L, int index, const char* registry, size_t stride, uint32_t* length) {
+#ifdef LOVR_USE_LUAU
+  UNUSED(L); UNUSED(index); UNUSED(registry); UNUSED(stride); UNUSED(length);
+  return NULL;
+#else
+  if (lua_type(L, index) != LUA_TCDATA) {
+    return NULL;
+  }
+
+  index = index > 0 ? index : index + lua_gettop(L) + 1;
+  lua_getfield(L, LUA_REGISTRYINDEX, registry);
+
+  size_t size;
+  const uint32_t* array = lua_tocdataof(L, index, -1, &size);
+  lua_pop(L, 1);
+  if (!array || size < 16) {
+    return NULL;
+  }
+
+  size_t count = array[0];
+  if (count > (SIZE_MAX - 16) / stride || size != 16 + count * stride) {
+    return NULL;
+  }
+
+  *length = (uint32_t) count;
+  return (float*) ((char*) array + 16);
+#endif
+}
+
+float* luax_tomat4array(lua_State* L, int index, uint32_t* length) {
+  return luax_tofloatarray(L, index, "_lovr_mat4_array_ctype", 16 * sizeof(float), length);
+}
+
+float* luax_tofloatvectorarray(lua_State* L, int index, uint32_t* length) {
+  float* data = luax_tofloatarray(L, index, "_lovr_vector_array_ctype", 4 * sizeof(float), length);
+  return data ? data : luax_tofloatarray(L, index, "_lovr_quaternion_array_ctype", 4 * sizeof(float), length);
+}
+
 static void luax_pushsimd(lua_State* L, const char* name, const char* registry, const float v[4]) {
   lua_getfield(L, LUA_REGISTRYINDEX, registry);
   if (lua_isnil(L, -1)) {

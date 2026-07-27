@@ -178,7 +178,7 @@ static int l_lovrModelSetNodeTransform(lua_State* L) {
   if (matrix) {
     mat4_getPosition(matrix, position);
     mat4_getScale(matrix, scale);
-    mat4_getOrientation(matrix, rotation);
+    quat_fromMat4Scale(rotation, matrix, scale);
     index = 4;
   } else {
     index = luax_readvec3(L, index, position, NULL);
@@ -187,6 +187,57 @@ static int l_lovrModelSetNodeTransform(lua_State* L) {
   }
   float alpha = luax_optfloat(L, index, 1.f);
   lovrModelSetNodeTransform(model, node, position, scale, rotation, alpha);
+  return 0;
+}
+
+static int l_lovrModelGetNodeTransforms(lua_State* L) {
+  Model* model = luax_checktype(L, 1, Model);
+  uint32_t length;
+  float* matrices = luax_tomat4array(L, 2, &length);
+  if (!matrices) return luax_typeerror(L, 2, "Mat4Array");
+
+  const ModelMetadata* metadata = lovrModelGetMetadata(model);
+  uint32_t firstNode = luax_optu32(L, 3, 1) - 1;
+  uint32_t destination = luax_optu32(L, 4, 1) - 1;
+  luax_check(L, firstNode < metadata->nodeCount, "First model node is out of bounds");
+  luax_check(L, destination < length, "Mat4Array destination index is out of bounds");
+
+  uint32_t limit = MIN(metadata->nodeCount - firstNode, length - destination);
+  uint32_t count = luax_optu32(L, 5, limit);
+  luax_check(L, count <= limit, "Model node transform range is out of bounds");
+  OriginType origin = luax_checkenum(L, 6, OriginType, "root");
+
+  lovrModelGetNodeTransforms(
+    model,
+    firstNode,
+    count,
+    matrices + 16 * destination,
+    origin
+  );
+
+  lua_settop(L, 2);
+  return 1;
+}
+
+static int l_lovrModelSetNodeTransforms(lua_State* L) {
+  Model* model = luax_checktype(L, 1, Model);
+  uint32_t length;
+  float* matrices = luax_tomat4array(L, 2, &length);
+  if (!matrices) return luax_typeerror(L, 2, "Mat4Array");
+
+  const ModelMetadata* metadata = lovrModelGetMetadata(model);
+  uint32_t firstNode = luax_optu32(L, 3, 1) - 1;
+  uint32_t source = luax_optu32(L, 4, 1) - 1;
+  luax_check(L, firstNode < metadata->nodeCount, "First model node is out of bounds");
+  luax_check(L, source < length, "Mat4Array source index is out of bounds");
+
+  uint32_t limit = MIN(metadata->nodeCount - firstNode, length - source);
+  uint32_t count = luax_optu32(L, 5, limit);
+  luax_check(L, count <= limit, "Model node transform range is out of bounds");
+  float alpha = luax_optfloat(L, 6, 1.f);
+
+  lovrModelSetNodeTransforms(model, firstNode, count, matrices + 16 * source, alpha);
+
   return 0;
 }
 
@@ -365,6 +416,8 @@ const luaL_Reg lovrModel[] = {
   { "setNodePose", l_lovrModelSetNodePose },
   { "getNodeTransform", l_lovrModelGetNodeTransform },
   { "setNodeTransform", l_lovrModelSetNodeTransform },
+  { "getNodeTransforms", l_lovrModelGetNodeTransforms },
+  { "setNodeTransforms", l_lovrModelSetNodeTransforms },
   { "resetNodeTransforms", l_lovrModelResetNodeTransforms },
 
   { "getAnimationCount", l_lovrModelMetaGetAnimationCount },

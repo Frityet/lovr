@@ -516,6 +516,8 @@ float lovrModelGetBlendShapeWeight(Model* model, uint32_t index);
 void lovrModelSetBlendShapeWeight(Model* model, uint32_t index, float weight);
 void lovrModelGetNodeTransform(Model* model, uint32_t node, float* position, float* scale, float* rotation, OriginType origin);
 void lovrModelSetNodeTransform(Model* model, uint32_t node, float* position, float* scale, float* rotation, float alpha);
+void lovrModelGetNodeTransforms(Model* model, uint32_t first, uint32_t count, float* matrices, OriginType origin);
+void lovrModelSetNodeTransforms(Model* model, uint32_t first, uint32_t count, float* matrices, float alpha);
 bool lovrModelIsNodeVisible(Model* model, uint32_t node);
 void lovrModelSetNodeVisible(Model* model, uint32_t node, bool visible);
 Buffer* lovrModelGetVertexBuffer(Model* model);

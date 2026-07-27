@@ -828,10 +828,14 @@ static int l_lovrGraphicsNewBuffer(lua_State* L) {
           lua_pop(L, 1);
           hasData = true;
           break;
-        case LUA_TCDATA:
-          format->length = 0;
+        case LUA_TCDATA: {
+          uint32_t arrayLength = 0;
+          bool array = luax_tomat4array(L, 2, &arrayLength) != NULL;
+          array = array || luax_tofloatvectorarray(L, 2, &arrayLength) != NULL;
+          format->length = array ? arrayLength : 0;
           hasData = true;
           break;
+        }
 #ifdef LOVR_USE_LUAU
         case LUA_TVECTOR:
           format->length = 0;

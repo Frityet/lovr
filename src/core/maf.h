@@ -146,10 +146,10 @@ MAF quat quat_fromAngleAxis(quat q, float angle, float ax, float ay, float az) {
 }
 
 // https://d3cw3dd2w32x2b.cloudfront.net/wp-content/uploads/2015/01/matrix-to-quat.pdf
-MAF quat quat_fromMat4(quat q, mat4 m) {
-  float sx = 1.f / vec3_length(m + 0);
-  float sy = 1.f / vec3_length(m + 4);
-  float sz = 1.f / vec3_length(m + 8);
+MAF quat quat_fromMat4Scale(quat q, mat4 m, const float scale[3]) {
+  float sx = 1.f / scale[0];
+  float sy = 1.f / scale[1];
+  float sz = 1.f / scale[2];
 
   float m00 = m[0] * sx, m01 = m[1] * sx, m02 = m[2] * sx;
   float m10 = m[4] * sy, m11 = m[5] * sy, m12 = m[6] * sy;
@@ -176,6 +176,15 @@ MAF quat quat_fromMat4(quat q, mat4 m) {
       return quat_set(q, (m12 - m21) * s, (m20 - m02) * s, (m01 - m10) * s, t * s);
     }
   }
+}
+
+MAF quat quat_fromMat4(quat q, mat4 m) {
+  float scale[3] = {
+    vec3_length(m + 0),
+    vec3_length(m + 4),
+    vec3_length(m + 8)
+  };
+  return quat_fromMat4Scale(q, m, scale);
 }
 
 MAF quat quat_identity(quat q) {

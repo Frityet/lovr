@@ -13,6 +13,18 @@ typedef uint32_t lovr_bits4 __attribute__((vector_size(16)));
 typedef struct {
   lovr_raw4 columns[4];
 } lovr_mat4;
+typedef struct {
+  const uint32_t length;
+  lovr_vector4 data[?];
+} lovr_vector_array;
+typedef struct {
+  const uint32_t length;
+  lovr_raw4 data[?];
+} lovr_quaternion_array;
+typedef struct {
+  const uint32_t length;
+  lovr_mat4 data[?];
+} lovr_mat4_array;
 
 void lovrMathMat4Invert(lovr_mat4* matrix);
 ]]
@@ -20,9 +32,18 @@ void lovrMathMat4Invert(lovr_mat4* matrix);
 local vector_ctype
 local quaternion_ctype
 local mat4_ctype
+local vector_ref_ctype = ffi.typeof('lovr_vector4&')
+local quaternion_ref_ctype = ffi.typeof('lovr_quaternion4&')
+local mat4_ref_ctype = ffi.typeof('lovr_mat4&')
+local vector_array_ctype
+local quaternion_array_ctype
+local mat4_array_ctype
 local vector
 local quaternion
 local mat4
+local vector_array
+local quaternion_array
+local mat4_array
 local raw_ctype = ffi.typeof('lovr_raw4')
 local bits_ctype = ffi.typeof('lovr_bits4')
 local conjugate_mask
@@ -38,9 +59,19 @@ local matrix_quaternion_sign0
 local matrix_quaternion_sign1
 local matrix_quaternion_sign2
 local matrix_one
+local matrix_pi
 local native_invert_ffi
 local muladd = simd.features().fma and simd.fma or function(a, b, c)
   return a * b + c
+end
+
+local function array_count(count)
+  assert(
+    type(count) == 'number' and count >= 0 and
+    count <= 0xffffffff and floor(count) == count,
+    'array length must be a nonnegative integer'
+  )
+  return count
 end
 
 vector = {}
@@ -56,6 +87,12 @@ end
 
 local function vector_cast(v)
   return simd.bitcast(vector_ctype, v)
+end
+
+local function vector_is(value)
+  if type(value) ~= 'cdata' then return false end
+  local ctype = ffi.typeof(value)
+  return ctype == vector_ctype or ctype == vector_ref_ctype
 end
 
 local function dot3(a, b)
@@ -80,6 +117,12 @@ end
 
 local function quaternion_pack(v)
   return simd.bitcast(quaternion_ctype, v)
+end
+
+local function quaternion_is(value)
+  if type(value) ~= 'cdata' then return false end
+  local ctype = ffi.typeof(value)
+  return ctype == quaternion_ctype or ctype == quaternion_ref_ctype
 end
 
 function vector.pack(x, y, z)
@@ -195,12 +238,13 @@ matrix_quaternion_sign0 = raw_ctype(0, 2, -2, 0)
 matrix_quaternion_sign1 = raw_ctype(-2, 0, 2, 0)
 matrix_quaternion_sign2 = raw_ctype(2, -2, 0, 0)
 matrix_one = raw_ctype(1, 1, 1, 1)
+matrix_pi = raw_ctype(math.pi, 0, 0, 0)[0]
 
 setmetatable(vector, {
   __call = function(_, x, y, z)
     x = x or 0
     if type(x) == 'table' then return x end -- Deprecated
-    if type(x) == 'cdata' and ffi.typeof(x) == vector_ctype then return x end
+    if vector_is(x) then return x end
     assert(type(x) == 'number', 'vector components must be numbers')
     return vector_ctype(x, y or x, z or (y and 0 or x), 0)
   end
@@ -216,6 +260,92 @@ vector.down = vector(0, -1, 0)
 vector.forward = vector(0, 0, -1)
 vector.backward = vector(0, 0, 1)
 vector.back = vector(0, 0, 1)
+
+vector_array = {}
+
+local function vector_array_is(value)
+  return type(value) == 'cdata' and ffi.typeof(value) == vector_array_ctype
+end
+
+local function vector_array_value(value)
+  if vector_is(value) then
+    return value
+  elseif type(value) == 'table' then
+    if #value > 0 then
+      return vector_ctype(value[1] or 0, value[2] or 0, value[3] or 0, 0)
+    else
+      return vector_ctype(value.x or 0, value.y or 0, value.z or 0, 0)
+    end
+  end
+  error('vector array values must be vectors or component tables', 3)
+end
+
+function vector_array.fill(array, value, first, count)
+  value = vector_array_value(value)
+  first = first and array_count(first) or 1
+  count = count and array_count(count) or array.length - first + 1
+  assert(first >= 1 and first + count - 1 <= array.length, 'vector array range is out of bounds')
+  for i = first - 1, first + count - 2 do
+    array.data[i] = value
+  end
+  return array
+end
+
+function vector_array.type()
+  return 'VectorArray'
+end
+
+local function vector_array_index(array, key)
+  if type(key) == 'number' then
+    local index = floor(key)
+    if index == key and index >= 1 and index <= array.length then
+      return array.data[index - 1]
+    end
+  end
+  local method = vector_array[key]
+  if method ~= nil then return method end
+  error(('attempt to index field %s of VectorArray'):format(tostring(key)), 2)
+end
+
+local function vector_array_newindex(array, key, value)
+  if type(key) == 'number' then
+    local index = floor(key)
+    if index == key and index >= 1 and index <= array.length then
+      array.data[index - 1] = vector_array_value(value)
+      return
+    end
+  end
+  error(('attempt to assign field %s of VectorArray'):format(tostring(key)), 2)
+end
+
+vector_array_ctype = ffi.metatype('lovr_vector_array', {
+  __index = vector_array_index,
+  __newindex = vector_array_newindex,
+  __len = function(array) return array.length end
+})
+
+local vector_array_constructor = { ctype = vector_array_ctype }
+setmetatable(vector_array_constructor, {
+  __call = function(_, count, initial)
+    count = array_count(count)
+    local array = vector_array_ctype(count, count)
+    if vector_array_is(initial) then
+      local copied = math.min(count, tonumber(initial.length))
+      ffi.copy(array.data, initial.data, copied * ffi.sizeof(vector_ctype))
+    elseif initial ~= nil then
+      if type(initial) == 'table' and
+         not (initial.x or initial.y or initial.z) and
+         not (type(initial[1]) == 'number') then
+        local copied = math.min(count, #initial)
+        for i = 1, copied do array.data[i - 1] = vector_array_value(initial[i]) end
+      else
+        vector_array.fill(array, initial)
+      end
+    end
+    return array
+  end
+})
+vector.array = vector_array_constructor
 
 ---
 
@@ -453,7 +583,7 @@ end
 function quaternion.__mul(q, b)
   local qv = quaternion_raw(q)
 
-  if type(b) == 'cdata' and ffi.typeof(b) == quaternion_ctype then
+  if quaternion_is(b) then
     local rv = quaternion_raw(b)
     local xterm = simd.bxor(simd.shuffle(rv, 3, 2, 1, 0), quaternion_x_sign)
     local yterm = simd.bxor(simd.shuffle(rv, 2, 3, 0, 1), quaternion_y_sign)
@@ -469,7 +599,7 @@ function quaternion.__mul(q, b)
       yterm * simd.shuffle(qv, 1, 1, 1, 1)
     )
     return quaternion_pack(xy + yz)
-  elseif type(b) == 'cdata' and ffi.typeof(b) == vector_ctype then
+  elseif vector_is(b) then
     local bv = vector_raw(b)
     local x, y, z, w = qv[0], qv[1], qv[2], qv[3]
     local xx, yy, zz, ww = x * x, y * y, z * z, w * w
@@ -509,7 +639,7 @@ setmetatable(quaternion, {
     local first = ...
     if first then
       if type(first) == 'table' then return first end -- Deprecated
-      if type(first) == 'cdata' and ffi.typeof(first) == quaternion_ctype then
+      if quaternion_is(first) then
         return first
       end
       return quaternion.angleaxis(...)
@@ -522,13 +652,113 @@ setmetatable(quaternion, {
 quaternion.ctype = quaternion_ctype
 quaternion.identity = quaternion_ctype(0, 0, 0, 1)
 
+quaternion_array = {}
+
+local function quaternion_array_is(value)
+  return type(value) == 'cdata' and ffi.typeof(value) == quaternion_array_ctype
+end
+
+local function quaternion_array_value(value)
+  if quaternion_is(value) then
+    return quaternion_raw(value)
+  elseif type(value) == 'table' then
+    if #value > 0 then
+      return raw_ctype(
+        value[1] or 0,
+        value[2] or 0,
+        value[3] or 0,
+        value[4] == nil and 1 or value[4]
+      )
+    else
+      return raw_ctype(
+        value.x or 0,
+        value.y or 0,
+        value.z or 0,
+        value.w == nil and 1 or value.w
+      )
+    end
+  end
+  error('quaternion array values must be quaternions or component tables', 3)
+end
+
+function quaternion_array.fill(array, value, first, count)
+  value = quaternion_array_value(value)
+  first = first and array_count(first) or 1
+  count = count and array_count(count) or array.length - first + 1
+  assert(first >= 1 and first + count - 1 <= array.length, 'quaternion array range is out of bounds')
+  for i = first - 1, first + count - 2 do
+    array.data[i] = value
+  end
+  return array
+end
+
+function quaternion_array.type()
+  return 'QuaternionArray'
+end
+
+local function quaternion_array_index(array, key)
+  if type(key) == 'number' then
+    local index = floor(key)
+    if index == key and index >= 1 and index <= array.length then
+      return quaternion_pack(array.data[index - 1])
+    end
+  end
+  local method = quaternion_array[key]
+  if method ~= nil then return method end
+  error(('attempt to index field %s of QuaternionArray'):format(tostring(key)), 2)
+end
+
+local function quaternion_array_newindex(array, key, value)
+  if type(key) == 'number' then
+    local index = floor(key)
+    if index == key and index >= 1 and index <= array.length then
+      array.data[index - 1] = quaternion_array_value(value)
+      return
+    end
+  end
+  error(('attempt to assign field %s of QuaternionArray'):format(tostring(key)), 2)
+end
+
+quaternion_array_ctype = ffi.metatype('lovr_quaternion_array', {
+  __index = quaternion_array_index,
+  __newindex = quaternion_array_newindex,
+  __len = function(array) return array.length end
+})
+
+local quaternion_array_constructor = { ctype = quaternion_array_ctype }
+setmetatable(quaternion_array_constructor, {
+  __call = function(_, count, initial)
+    count = array_count(count)
+    local array = quaternion_array_ctype(count, count)
+    if quaternion_array_is(initial) then
+      local copied = math.min(count, tonumber(initial.length))
+      ffi.copy(array.data, initial.data, copied * ffi.sizeof(raw_ctype))
+    elseif initial ~= nil then
+      if type(initial) == 'table' and
+         not (initial.x or initial.y or initial.z or initial.w) and
+         not (type(initial[1]) == 'number') then
+        local copied = math.min(count, #initial)
+        for i = 1, copied do
+          array.data[i - 1] = quaternion_array_value(initial[i])
+        end
+      else
+        quaternion_array.fill(array, initial)
+      end
+    end
+    return array
+  end
+})
+quaternion.array = quaternion_array_constructor
+
 ---
 
 mat4 = {}
 mat4.__index = mat4
 
 local function matrix_is(value)
-  return type(value) == 'cdata' and ffi.typeof(value) == mat4_ctype
+  if type(value) ~= 'cdata' then return false end
+  local ctype = ffi.typeof(value)
+  return ctype == mat4_ctype or ctype == mat4_ref_ctype
 end
 
 local function matrix_assign(matrix, c0, c1, c2, c3)
@@ -559,6 +789,46 @@ local function matrix_copy(matrix, other)
   )
 end
 
+local function matrix_length3(column)
+  local xyz = simd.insert(column, 3, 0)
+  return sqrt(simd.hsum(xyz * xyz))
+end
+
+local function matrix_angle_axis(matrix)
+  local c0, c1, c2 =
+    matrix.columns[0], matrix.columns[1], matrix.columns[2]
+  local sx, sy, sz =
+    matrix_length3(c0), matrix_length3(c1), matrix_length3(c2)
+  local d0, d1, d2 = c0[0] / sx, c1[1] / sy, c2[2] / sz
+  local axis = raw_ctype(
+    c1[2] - c2[1],
+    c2[0] - c0[2],
+    c0[1] - c1[0],
+    0
+  )
+  local cosine = (d0 + d1 + d2 - 1) * .5
+  local angle
+
+  if abs(cosine) < 1 - 1.1920928955078125e-7 then
+    angle = acos(cosine)
+  elseif cosine > 0 then
+    angle = 0
+  else
+    angle = matrix_pi
+    if d0 > d1 and d0 > d2 then
+      axis = raw_ctype(sx + c0[0], c0[1], c0[2], 0)
+    elseif d1 > d2 then
+      axis = raw_ctype(c1[0], sy + c1[1], c1[2], 0)
+    else
+      axis = raw_ctype(c2[0], c2[1], sz + c2[2], 0)
+    end
+  end
+
+  local length = matrix_length3(axis)
+  if length ~= 0 then axis = axis / length end
+  return angle, axis[0], axis[1], axis[2]
+end
+
 local function matrix_mul_column(matrix, column)
   local result = matrix.columns[3] * simd.shuffle(column, 3, 3, 3, 3)
   result = muladd(
@@ -576,6 +846,15 @@ local function matrix_mul_column(matrix, column)
     simd.shuffle(column, 2, 2, 2, 2),
     result
   )
+end
+
+local function matrix_multiply(left, right, output)
+  output = output or mat4_ctype()
+  local c0 = matrix_mul_column(left, right.columns[0])
+  local c1 = matrix_mul_column(left, right.columns[1])
+  local c2 = matrix_mul_column(left, right.columns[2])
+  local c3 = matrix_mul_column(left, right.columns[3])
+  return matrix_assign(output, c0, c1, c2, c3)
 end
 
 local function matrix_mul_direction(matrix, direction)
@@ -639,7 +918,7 @@ local function matrix_table_result(source, result)
 end
 
 local function matrix_read_components(value, y, z)
-  if type(value) == 'cdata' and ffi.typeof(value) == vector_ctype then
+  if vector_is(value) then
     return value[0], value[1], value[2]
   elseif type(value) == 'table' then
     local x
@@ -666,16 +945,15 @@ function mat4.set(matrix, ...)
     return matrix_identity(matrix)
   elseif matrix_is(first) then
     return matrix_copy(matrix, first)
-  elseif type(first) == 'cdata' and ffi.typeof(first) == vector_ctype then
+  elseif vector_is(first) then
     local second, third = select(2, ...), select(3, ...)
     if count == 2 and
-       type(second) == 'cdata' and ffi.typeof(second) == quaternion_ctype then
+       quaternion_is(second) then
       matrix_identity(matrix)
       mat4.setPosition(matrix, first)
       return mat4.setOrientation(matrix, second)
     elseif count == 3 and
-           type(second) == 'cdata' and ffi.typeof(second) == vector_ctype and
-           type(third) == 'cdata' and ffi.typeof(third) == quaternion_ctype then
+           vector_is(second) and quaternion_is(third) then
       matrix_identity(matrix)
       mat4.setPosition(matrix, first)
       mat4.setOrientation(matrix, third)
@@ -721,6 +999,24 @@ function mat4.equals(matrix, other)
   return true
 end
 
+function mat4.unpack(matrix, raw)
+  local c0, c1 = matrix.columns[0], matrix.columns[1]
+  local c2, c3 = matrix.columns[2], matrix.columns[3]
+  if raw then
+    return
+      c0[0], c0[1], c0[2], c0[3],
+      c1[0], c1[1], c1[2], c1[3],
+      c2[0], c2[1], c2[2], c2[3],
+      c3[0], c3[1], c3[2], c3[3]
+  end
+
+  local angle, ax, ay, az = matrix_angle_axis(matrix)
+  return
+    c3[0], c3[1], c3[2],
+    matrix_length3(c0), matrix_length3(c1), matrix_length3(c2),
+    angle, ax, ay, az
+end
+
 function mat4.getPosition(matrix)
   local position = matrix.columns[3]
   return position[0], position[1], position[2]
@@ -733,13 +1029,10 @@ function mat4.setPosition(matrix, x, y, z)
 end
 
 function mat4.getScale(matrix)
-  local c0 = simd.insert(matrix.columns[0], 3, 0)
-  local c1 = simd.insert(matrix.columns[1], 3, 0)
-  local c2 = simd.insert(matrix.columns[2], 3, 0)
   return
-    sqrt(simd.hsum(c0 * c0)),
-    sqrt(simd.hsum(c1 * c1)),
-    sqrt(simd.hsum(c2 * c2))
+    matrix_length3(matrix.columns[0]),
+    matrix_length3(matrix.columns[1]),
+    matrix_length3(matrix.columns[2])
 end
 
 function mat4.setScale(matrix, x, y, z)
@@ -752,9 +1045,13 @@ function mat4.setScale(matrix, x, y, z)
   return matrix
 end
 
+function mat4.getOrientation(matrix)
+  return matrix_angle_axis(matrix)
+end
+
 function mat4.setOrientation(matrix, orientation, ax, ay, az)
   local q
-  if type(orientation) == 'cdata' and ffi.typeof(orientation) == quaternion_ctype then
+  if quaternion_is(orientation) then
     q = orientation
   elseif type(orientation) == 'number' and
          type(ax) == 'number' and type(ay) == 'number' and type(az) == 'number' then
@@ -773,9 +1070,13 @@ function mat4.setOrientation(matrix, orientation, ax, ay, az)
   return matrix
 end
 
+function mat4.getPose(matrix)
+  local position = matrix.columns[3]
+  return position[0], position[1], position[2], matrix_angle_axis(matrix)
+end
+
 function mat4.setPose(matrix, position, orientation, ...)
-  if type(position) == 'cdata' and ffi.typeof(position) == vector_ctype and
-     type(orientation) == 'cdata' and ffi.typeof(orientation) == quaternion_ctype then
+  if vector_is(position) and quaternion_is(orientation) then
     mat4.setPosition(matrix, position)
     return mat4.setOrientation(matrix, orientation)
   elseif native_set_pose then
@@ -829,7 +1130,7 @@ end
 
 function mat4.rotate(matrix, rotation, ax, ay, az)
   local q
-  if type(rotation) == 'cdata' and ffi.typeof(rotation) == quaternion_ctype then
+  if quaternion_is(rotation) then
     q = rotation
   elseif type(rotation) == 'number' and
          type(ax) == 'number' and type(ay) == 'number' and type(az) == 'number' then
@@ -919,9 +1220,7 @@ local function matrix_look_basis(from, to, up)
 end
 
 function mat4.lookAt(matrix, from, to, up, ...)
-  if type(from) == 'cdata' and ffi.typeof(from) == vector_ctype and
-     type(to) == 'cdata' and ffi.typeof(to) == vector_ctype and
-     (up == nil or type(up) == 'cdata' and ffi.typeof(up) == vector_ctype) then
+  if vector_is(from) and vector_is(to) and (up == nil or vector_is(up)) then
     up = up or vector.up
     local x, y, z = matrix_look_basis(from, to, up)
     return matrix_assign(
@@ -939,9 +1238,7 @@ function mat4.lookAt(matrix, from, to, up, ...)
 end
 
 function mat4.target(matrix, from, to, up, ...)
-  if type(from) == 'cdata' and ffi.typeof(from) == vector_ctype and
-     type(to) == 'cdata' and ffi.typeof(to) == vector_ctype and
-     (up == nil or type(up) == 'cdata' and ffi.typeof(up) == vector_ctype) then
+  if vector_is(from) and vector_is(to) and (up == nil or vector_is(up)) then
     up = up or vector.up
     local x, y, z = matrix_look_basis(from, to, up)
     return matrix_assign(
@@ -959,8 +1256,7 @@ function mat4.target(matrix, from, to, up, ...)
 end
 
 function mat4.reflect(matrix, position, normal, ...)
-  if type(position) == 'cdata' and ffi.typeof(position) == vector_ctype and
-     type(normal) == 'cdata' and ffi.typeof(normal) == vector_ctype then
+  if vector_is(position) and vector_is(normal) then
     local nx, ny, nz = normal[0], normal[1], normal[2]
     local d = dot3(position, normal)
     return matrix_assign(
@@ -979,11 +1275,7 @@ end
 
 function mat4.mul(matrix, value, y, z, w)
   if matrix_is(value) then
-    local c0 = matrix_mul_column(matrix, value.columns[0])
-    local c1 = matrix_mul_column(matrix, value.columns[1])
-    local c2 = matrix_mul_column(matrix, value.columns[2])
-    local c3 = matrix_mul_column(matrix, value.columns[3])
-    return matrix_assign(matrix, c0, c1, c2, c3)
+    return matrix_multiply(matrix, value, matrix_is(y) and y or matrix)
   elseif type(value) == 'number' then
     local weight = w or 1
     local point = raw_ctype(value, y, z, weight)
@@ -992,7 +1284,7 @@ function mat4.mul(matrix, value, y, z, w)
       or weight == 1 and matrix_mul_affine(matrix, point)
       or matrix_mul_column(matrix, point)
     return result[0], result[1], result[2], result[3]
-  elseif type(value) == 'cdata' and ffi.typeof(value) == vector_ctype then
+  elseif vector_is(value) then
     local point = vector_raw(value)
     local weight = y or 1
     local result = weight == 0
@@ -1017,14 +1309,8 @@ end
 
 function mat4.__mul(matrix, value)
   if matrix_is(value) then
-    return matrix_assign(
-      mat4_ctype(),
-      matrix_mul_column(matrix, value.columns[0]),
-      matrix_mul_column(matrix, value.columns[1]),
-      matrix_mul_column(matrix, value.columns[2]),
-      matrix_mul_column(matrix, value.columns[3])
-    )
-  elseif type(value) == 'cdata' and ffi.typeof(value) == vector_ctype then
+    return matrix_multiply(matrix, value)
+  elseif vector_is(value) then
     return vector_result(matrix_mul_point(matrix, value))
   elseif type(value) == 'table' then
     local x, y, z = matrix_table_components(value)
@@ -1033,6 +1319,12 @@ function mat4.__mul(matrix, value)
   end
 
   error('Mat4 can only multiply another Mat4, table, or vector', 2)
+end
+
+function mat4.multiply(left, right, output)
+  assert(matrix_is(left) and matrix_is(right), 'mat4.multiply expects two Mat4 values')
+  assert(output == nil or matrix_is(output), 'mat4.multiply output must be a Mat4')
+  return matrix_multiply(left, right, output)
 end
 
 function mat4.__tostring(matrix)
@@ -1054,18 +1346,6 @@ function mat4.type()
 end
 
 function mat4.release()
-end
-
-if mat4_native then
-  local native_methods = {
-    'unpack',
-    'getOrientation',
-    'getPose'
-  }
-  for i = 1, #native_methods do
-    local name = native_methods[i]
-    mat4[name] = mat4_native[name]
-  end
 end
 
 local function matrix_index(matrix, key)
@@ -1111,6 +1391,148 @@ setmetatable(mat4, {
 })
 
 mat4.ctype = mat4_ctype
+
+mat4_array = {}
+
+local function mat4_array_is(value)
+  return type(value) == 'cdata' and ffi.typeof(value) == mat4_array_ctype
+end
+
+function mat4_array.fill(array, value, first, count)
+  assert(matrix_is(value), 'Mat4 array values must be Mat4 values')
+  first = first and array_count(first) or 1
+  count = count and array_count(count) or array.length - first + 1
+  assert(first >= 1 and first + count - 1 <= array.length, 'Mat4 array range is out of bounds')
+  for i = first - 1, first + count - 2 do
+    matrix_copy(array.data[i], value)
+  end
+  return array
+end
+
+function mat4_array.type()
+  return 'Mat4Array'
+end
+
+local function mat4_array_index(array, key)
+  if type(key) == 'number' then
+    local index = floor(key)
+    if index == key and index >= 1 and index <= array.length then
+      return array.data[index - 1]
+    end
+  end
+  local method = mat4_array[key]
+  if method ~= nil then return method end
+  error(('attempt to index field %s of Mat4Array'):format(tostring(key)), 2)
+end
+
+local function mat4_array_newindex(array, key, value)
+  if type(key) == 'number' then
+    local index = floor(key)
+    if index == key and index >= 1 and index <= array.length then
+      assert(matrix_is(value), 'Mat4 array values must be Mat4 values')
+      matrix_copy(array.data[index - 1], value)
+      return
+    end
+  end
+  error(('attempt to assign field %s of Mat4Array'):format(tostring(key)), 2)
+end
+
+mat4_array_ctype = ffi.metatype('lovr_mat4_array', {
+  __index = mat4_array_index,
+  __newindex = mat4_array_newindex,
+  __len = function(array) return array.length end
+})
+
+local mat4_array_constructor = { ctype = mat4_array_ctype }
+setmetatable(mat4_array_constructor, {
+  __call = function(_, count, initial)
+    count = array_count(count)
+    local array = mat4_array_ctype(count, count)
+    if mat4_array_is(initial) then
+      local copied = math.min(count, tonumber(initial.length))
+      ffi.copy(array.data, initial.data, copied * ffi.sizeof(mat4_ctype))
+    elseif matrix_is(initial) then
+      mat4_array.fill(array, initial)
+    elseif type(initial) == 'table' then
+      local copied = math.min(count, #initial)
+      for i = 1, copied do
+        assert(matrix_is(initial[i]), 'Mat4 array values must be Mat4 values')
+        matrix_copy(array.data[i - 1], initial[i])
+      end
+    elseif initial ~= nil then
+      error('Mat4 array initializer must be a Mat4, Mat4Array, or table', 2)
+    end
+    return array
+  end
+})
+mat4.array = mat4_array_constructor
+
+local function matrix_bulk_count(output, first, second, requested)
+  local count = tonumber(output.length)
+  if mat4_array_is(first) then count = math.min(count, tonumber(first.length)) end
+  if mat4_array_is(second) or vector_array_is(second) then
+    count = math.min(count, tonumber(second.length))
+  end
+  if requested ~= nil then
+    requested = array_count(requested)
+    assert(requested <= count, 'bulk Mat4 operation range is out of bounds')
+    count = requested
+  end
+  return count
+end
+
+function mat4.multiplyArray(left, right, output, count)
+  local left_array, right_array = mat4_array_is(left), mat4_array_is(right)
+  assert(left_array or matrix_is(left), 'left input must be a Mat4 or Mat4Array')
+  assert(right_array or matrix_is(right), 'right input must be a Mat4 or Mat4Array')
+  assert(mat4_array_is(output), 'output must be a Mat4Array')
+  count = matrix_bulk_count(output, left, right, count)
+
+  for i = 0, count - 1 do
+    local a = left_array and left.data[i] or left
+    local b = right_array and right.data[i] or right
+    matrix_multiply(a, b, output.data[i])
+  end
+  return output
+end
+
+function mat4.transformVectors(matrices, input, output, weight, count)
+  local matrix_array = mat4_array_is(matrices)
+  assert(matrix_array or matrix_is(matrices), 'matrix input must be a Mat4 or Mat4Array')
+  assert(vector_array_is(input), 'input must be a VectorArray')
+  assert(vector_array_is(output), 'output must be a VectorArray')
+  weight = weight or 1
+  count = matrix_bulk_count(output, matrices, input, count)
+
+  for i = 0, count - 1 do
+    local matrix = matrix_array and matrices.data[i] or matrices
+    local point = vector_raw(input.data[i])
+    local result = weight == 0
+      and matrix_mul_direction(matrix, point)
+      or weight == 1 and matrix_mul_affine(matrix, point)
+      or matrix_mul_column(matrix, simd.insert(point, 3, weight))
+    output.data[i] = vector_result(result)
+  end
+  return output
+end
+
+function mat4.transformPoints(matrices, input, output, count)
+  local matrix_array = mat4_array_is(matrices)
+  assert(matrix_array or matrix_is(matrices), 'matrix input must be a Mat4 or Mat4Array')
+  assert(vector_array_is(input), 'input must be a VectorArray')
+  assert(vector_array_is(output), 'output must be a VectorArray')
+  count = matrix_bulk_count(output, matrices, input, count)
+
+  for i = 0, count - 1 do
+    local matrix = matrix_array and matrices.data[i] or matrices
+    output.data[i] = vector_result(matrix_mul_point(matrix, input.data[i]))
+  end
+  return output
+end
+
+function mat4.transformDirections(matrices, input, output, count)
+  return mat4.transformVectors(matrices, input, output, 0, count)
+end
 
 _G.vector = vector
 _G.quaternion = quaternion

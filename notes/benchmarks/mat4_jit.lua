@@ -4,6 +4,10 @@
 --   ./deps/luajit/src/luajit -jdump=im notes/benchmarks/mat4_jit.lua direction
 --   ./deps/luajit/src/luajit -jdump=im notes/benchmarks/mat4_jit.lua compose
 --   ./deps/luajit/src/luajit -jdump=im notes/benchmarks/mat4_jit.lua compose_mutating
+--   ./deps/luajit/src/luajit -jdump=im notes/benchmarks/mat4_jit.lua compose_output
+--   ./deps/luajit/src/luajit -jdump=im notes/benchmarks/mat4_jit.lua orientation
+--   ./deps/luajit/src/luajit -jdump=im notes/benchmarks/mat4_jit.lua multiply_array
+--   ./deps/luajit/src/luajit -jdump=im notes/benchmarks/mat4_jit.lua transform_points
 --   ./deps/luajit/src/luajit -jdump=im notes/benchmarks/mat4_jit.lua transpose
 --   ./deps/luajit/src/luajit -jdump=im notes/benchmarks/mat4_jit.lua rotate
 
@@ -82,6 +86,59 @@ function kernels.compose_mutating(n)
   return matrix
 end
 
+function kernels.compose_output(n)
+  local matrix = mat4()
+  local output = mat4()
+  local transform = mat4(
+    1, 0, 0, 0,
+    0, 1, 0, 0,
+    0, 0, 1, 0,
+    .001, -.002, .003, 1
+  )
+  for _ = 1, n do
+    mat4.multiply(matrix, transform, output)
+    matrix, output = output, matrix
+  end
+  return matrix
+end
+
+function kernels.orientation(n)
+  local matrix = mat4()
+    :translate(1, 2, 3)
+    :rotate(quaternion(1.1, .2, .7, -.4))
+    :scale(2, 3, 4)
+  local result = 0
+  for _ = 1, n do
+    local angle, x, y, z = matrix:getOrientation()
+    result = result + angle + x + y + z
+  end
+  return result
+end
+
+function kernels.multiply_array(n)
+  local count = 64
+  local input = mat4.array(count, mat4():translate(.001, -.002, .003))
+  local output = mat4.array(count)
+  local transform = mat4():scale(.999)
+  for _ = 1, n do
+    mat4.multiplyArray(input, transform, output)
+    input, output = output, input
+  end
+  return input.data[0].columns[0][0]
+end
+
+function kernels.transform_points(n)
+  local count = 64
+  local input = vector.array(count, vector(1, 2, 3))
+  local output = vector.array(count)
+  local transform = mat4():translate(.001, -.002, .003)
+  for _ = 1, n do
+    mat4.transformPoints(transform, input, output)
+    input, output = output, input
+  end
+  return input.data[0][0]
+end
+
 function kernels.transpose(n)
   local matrix = mat4(
     1, 2, 3, 4,
@@ -106,7 +163,8 @@ end
 
 local name = assert(
   arg[1],
-  'expected mul, point, direction, compose, compose_mutating, transpose, or rotate'
+  'expected mul, point, direction, compose, compose_mutating, compose_output, ' ..
+  'orientation, multiply_array, transform_points, transpose, or rotate'
 )
 local kernel = assert(kernels[name], 'unknown kernel: ' .. name)
 local result = kernel(1000)

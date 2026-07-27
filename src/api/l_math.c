@@ -234,6 +234,20 @@ int luaopen_lovr_math(lua_State* L) {
     lua_getfield(L, -1, "ctype");
     lua_setfield(L, LUA_REGISTRYINDEX, "_lovr_mat4_ctype");
     lua_pop(L, 1);
+
+    const char* arrayTypes[] = { "vector", "quaternion", "mat4" };
+    const char* arrayRegistries[] = {
+      "_lovr_vector_array_ctype",
+      "_lovr_quaternion_array_ctype",
+      "_lovr_mat4_array_ctype"
+    };
+    for (int i = 0; i < 3; i++) {
+      lua_getglobal(L, arrayTypes[i]);
+      lua_getfield(L, -1, "array");
+      lua_getfield(L, -1, "ctype");
+      lua_setfield(L, LUA_REGISTRYINDEX, arrayRegistries[i]);
+      lua_pop(L, 2);
+    }
   } else {
     return lua_error(L);
   }

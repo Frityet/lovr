@@ -5556,8 +5556,12 @@ void lovrModelResetNodeTransforms(Model* model) {
     NodeTransform* transform = &model->localTransforms[i];
     if (meta->nodes[i].hasMatrix) {
       mat4_getPosition(meta->nodes[i].transform.matrix, transform->position);
-      mat4_getOrientation(meta->nodes[i].transform.matrix, transform->rotation);
       mat4_getScale(meta->nodes[i].transform.matrix, transform->scale);
+      quat_fromMat4Scale(
+        transform->rotation,
+        meta->nodes[i].transform.matrix,
+        transform->scale
+      );
     } else {
       vec3_init(transform->position, meta->nodes[i].transform.translation);
       quat_init(transform->rotation, meta->nodes[i].transform.rotation);
@@ -5704,9 +5708,10 @@ void lovrModelGetNodeTransform(Model* model, uint32_t node, float position[3], f
       updateModelTransforms(model, model->meta.rootNode, (float[]) MAT4_IDENTITY);
       model->transformsDirty = false;
     }
-    mat4_getPosition(model->globalTransforms + 16 * node, position);
-    mat4_getScale(model->globalTransforms + 16 * node, scale);
-    mat4_getOrientation(model->globalTransforms + 16 * node, rotation);
+    float* matrix = model->globalTransforms + 16 * node;
+    mat4_getPosition(matrix, position);
+    mat4_getScale(matrix, scale);
+    quat_fromMat4Scale(rotation, matrix, scale);
   }
 }
 
@@ -5723,6 +5728,49 @@ void lovrModelSetNodeTransform(Model* model, uint32_t node, float position[3], f
     if (position) vec3_lerp(transform->position, position, alpha);
     if (scale) vec3_lerp(transform->scale, scale, alpha);
     if (rotation) quat_slerp(transform->rotation, rotation, alpha);
+  }
+
+  model->transformsDirty = true;
+}
+
+void lovrModelGetNodeTransforms(Model* model, uint32_t first, uint32_t count, float* matrices, OriginType origin) {
+  if (origin == ORIGIN_ROOT) {
+    if (model->transformsDirty) {
+      updateModelTransforms(model, model->meta.rootNode, (float[]) MAT4_IDENTITY);
+      model->transformsDirty = false;
+    }
+    memcpy(matrices, model->globalTransforms + 16 * first, count * 16 * sizeof(float));
+    return;
+  }
+
+  for (uint32_t i = 0; i < count; i++) {
+    NodeTransform* transform = &model->localTransforms[first + i];
+    mat4 matrix = matrices + 16 * i;
+    mat4_fromPose(matrix, transform->position, transform->rotation);
+    mat4_scale(matrix, transform->scale[0], transform->scale[1], transform->scale[2]);
+  }
+}
+
+void lovrModelSetNodeTransforms(Model* model, uint32_t first, uint32_t count, float* matrices, float alpha) {
+  if (alpha <= 0.f || count == 0) return;
+
+  for (uint32_t i = 0; i < count; i++) {
+    NodeTransform* transform = &model->localTransforms[first + i];
+    float* matrix = matrices + 16 * i;
+
+    if (alpha >= 1.f) {
+      mat4_getPosition(matrix, transform->position);
+      mat4_getScale(matrix, transform->scale);
+      quat_fromMat4Scale(transform->rotation, matrix, transform->scale);
+    } else {
+      float position[3], scale[3], rotation[4];
+      mat4_getPosition(matrix, position);
+      mat4_getScale(matrix, scale);
+      quat_fromMat4Scale(rotation, matrix, scale);
+      vec3_lerp(transform->position, position, alpha);
+      vec3_lerp(transform->scale, scale, alpha);
+      quat_slerp(transform->rotation, rotation, alpha);
+    }
   }
 
   model->transformsDirty = true;

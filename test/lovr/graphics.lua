@@ -41,6 +41,21 @@ group('graphics', function()
       expect(buffer:getStride()).to.equal(12)
       buffer:setData({ vec3(1, 2, 3), vec3(4, 5, 6) })
       expect(buffer:getData()).to.equal({ 1, 2, 3, 4, 5, 6 })
+
+      local packed = vector.array(2, { vector(7, 8, 9), vector(10, 11, 12) })
+      buffer = lovr.graphics.newBuffer('vec3', packed)
+      expect(buffer:getLength()).to.be(2)
+      expect(buffer:getData()).to.equal({ 7, 8, 9, 10, 11, 12 })
+      packed[2] = vector(13, 14, 15)
+      buffer:setData(packed)
+      expect(buffer:getData()).to.equal({ 7, 8, 9, 13, 14, 15 })
+
+      local rotations = quaternion.array(2, {
+        quaternion.pack(1, 2, 3, 4),
+        quaternion.pack(5, 6, 7, 8)
+      })
+      buffer = lovr.graphics.newBuffer('vec4', rotations)
+      expect(buffer:getData()).to.equal({ 1, 2, 3, 4, 5, 6, 7, 8 })
     end)
 
     test('format: matrix', function()
@@ -65,6 +80,17 @@ group('graphics', function()
         1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16,
         16, 15, 14, 13, 12, 11, 10, 9, 8, 7, 6, 5, 4, 3, 2, 1
       })
+
+      local packed = mat4.array(2, { matrix, mat4(unpack(inverse)) })
+      buffer = lovr.graphics.newBuffer('mat4', packed)
+      expect(buffer:getLength()).to.be(2)
+      expect(buffer:getData()).to.equal({
+        1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16,
+        16, 15, 14, 13, 12, 11, 10, 9, 8, 7, 6, 5, 4, 3, 2, 1
+      })
+      packed[2] = matrix
+      buffer:setData(packed, 1, 2, 1)
+      expect(buffer:getData(1, 1)).to.equal(values)
     end)
 
     test('format: scalar array (single)', function()
@@ -712,6 +738,57 @@ group('graphics', function()
       expect(shader:hasVariable('unknown')).to.equal(false)
       expect(shader:hasVariable('Params')).to.equal(true)
       expect(shader:hasVariable('image')).to.equal(true)
+    end)
+  end)
+
+  group('Model', function()
+    test('packed node transforms', function()
+      local blob = lovr.data.newBlob([[
+        {
+          "asset": { "version": "2.0" },
+          "nodes": [
+            { "name": "a", "children": [1] },
+            { "name": "b" }
+          ],
+          "scenes": [{ "nodes": [0] }],
+          "scene": 0
+        }
+      ]], 'nodes.gltf')
+      local modelData = lovr.data.newModelData(blob)
+      local model = lovr.graphics.newModel(modelData)
+      local input = mat4.array(2, {
+        mat4():translate(1, 2, 3):rotate(.5, 0, 1, 0),
+        mat4():translate(4, 5, 6):scale(2, 3, 4)
+      })
+
+      model:setNodeTransforms(input)
+      local output = mat4.array(2)
+      expect(model:getNodeTransforms(output)).to.be(output)
+      expect(output[1]:equals(input[1])).to.be(true)
+      expect(output[2]:equals(input[1] * input[2])).to.be(true)
+      model:getNodeTransforms(output, 1, 1, 2, 'parent')
+      expect(output[1]:equals(input[1])).to.be(true)
+      expect(output[2]:equals(input[2])).to.be(true)
+
+      local reference = lovr.graphics.newModel(modelData)
+      reference:setNodeTransforms(input)
+      local target = mat4.array(2, {
+        mat4():translate(9, 8, 7):rotate(.8, 1, 0, 0):scale(4, 3, 2),
+        mat4():translate(6, 5, 4):rotate(.4, 0, 0, 1):scale(3, 2, 1)
+      })
+      model:setNodeTransforms(target, 1, 1, 2, .25)
+      for i = 1, 2 do reference:setNodeTransform(i, target[i], .25) end
+      local expected = mat4.array(2)
+      model:getNodeTransforms(output, 1, 1, 2, 'parent')
+      reference:getNodeTransforms(expected, 1, 1, 2, 'parent')
+      expect(output[1]:equals(expected[1])).to.be(true)
+      expect(output[2]:equals(expected[2])).to.be(true)
+
+      model:setNodeTransform(1, input[2])
+      model:getNodeTransforms(output, 1, 2, 1)
+      expect(output[2]:equals(input[2])).to.be(true)
+      expect(function() model:getNodeTransforms(output, 2, 2, 2) end).to.fail()
+      expect(function() model:setNodeTransforms(input, 2, 2, 2) end).to.fail()
     end)
   end)
 

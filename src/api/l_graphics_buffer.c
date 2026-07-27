@@ -161,11 +161,8 @@ static bool luax_checkfieldn(lua_State* L, int index, const DataField* field, vo
   return true;
 }
 
-static bool luax_checkfieldv(lua_State* L, int index, const DataField* field, void* data) {
+static bool luax_copyfieldv(const float* vector, const DataField* field, void* data) {
   DataPointer p = { .raw = data };
-  size_t lanes;
-  const float* vector = lua_tofloatvector(L, index, &lanes);
-  luax_fieldcheck(L, vector && lanes >= 3 && (field->type < TYPE_MAT2 || field->type > TYPE_MAT4), index, field, false);
   float v[4] = { vector[0], vector[1], vector[2], 1.f };
   switch (field->type) {
     case TYPE_I8x4: for (int i = 0; i < 4; i++) p.i8[i] = (int8_t) v[i]; break;
@@ -198,18 +195,29 @@ static bool luax_checkfieldv(lua_State* L, int index, const DataField* field, vo
   return true;
 }
 
-static bool luax_checkfieldm(lua_State* L, int index, const DataField* field, void* data, const float* matrix) {
+static bool luax_checkfieldv(lua_State* L, int index, const DataField* field, void* data) {
+  size_t lanes;
+  const float* vector = lua_tofloatvector(L, index, &lanes);
+  luax_fieldcheck(L, vector && lanes >= 3 && typeComponents[field->type] > 1 &&
+    (field->type < TYPE_MAT2 || field->type > TYPE_MAT4), index, field, false);
+  return luax_copyfieldv(vector, field, data);
+}
+
+static bool luax_copyfieldm(const float* matrix, const DataField* field, void* data) {
   DataPointer p = { .raw = data };
-  if (!matrix) matrix = luax_tomat4(L, index);
-  luax_fieldcheck(L, matrix && (field->type >= TYPE_MAT2 && field->type <= TYPE_MAT4), index, field, false);
-  const float* m = matrix;
   switch (field->type) {
-    case TYPE_MAT2: for (int i = 0; i < 2; i++) memcpy(p.f32 + 2 * i, m + 4 * i, 2 * sizeof(float)); break;
-    case TYPE_MAT3: for (int i = 0; i < 3; i++) memcpy(p.f32 + 4 * i, m + 4 * i, 3 * sizeof(float)); break;
-    case TYPE_MAT4: memcpy(data, m, 16 * sizeof(float)); break;
+    case TYPE_MAT2: for (int i = 0; i < 2; i++) memcpy(p.f32 + 2 * i, matrix + 4 * i, 2 * sizeof(float)); break;
+    case TYPE_MAT3: for (int i = 0; i < 3; i++) memcpy(p.f32 + 4 * i, matrix + 4 * i, 3 * sizeof(float)); break;
+    case TYPE_MAT4: memcpy(data, matrix, 16 * sizeof(float)); break;
     default: lovrUnreachable();
   }
   return true;
+}
+
+static bool luax_checkfieldm(lua_State* L, int index, const DataField* field, void* data, const float* matrix) {
+  if (!matrix) matrix = luax_tomat4(L, index);
+  luax_fieldcheck(L, matrix && (field->type >= TYPE_MAT2 && field->type <= TYPE_MAT4), index, field, false);
+  return luax_copyfieldm(matrix, field, data);
 }
 
 static bool luax_checkfieldt(lua_State* L, int index, const DataField* field, void* data) {
@@ -290,6 +298,43 @@ static bool luax_checkstruct(lua_State* L, int index, const DataField* structure
 }
 
 static bool luax_checkarray(lua_State* L, int index, int start, int count, const DataField* array, char* data) {
+  uint32_t sourceLength;
+  float* matrices = luax_tomat4array(L, index, &sourceLength);
+  if (matrices) {
+    luax_fieldcheck(L, array->fieldCount == 0 &&
+      array->type >= TYPE_MAT2 && array->type <= TYPE_MAT4, index, array, true);
+    luax_fieldcheck(L, start >= 1 && (uint64_t) start <= (uint64_t) sourceLength + 1, index, array, true);
+    uint32_t available = sourceLength - (uint32_t) (start - 1);
+    if ((uint32_t) count > available) count = (int) available;
+    matrices += 16 * (start - 1);
+    if (array->type == TYPE_MAT4 && array->stride == 16 * sizeof(float)) {
+      memcpy(data, matrices, count * 16 * sizeof(float));
+    } else {
+      for (int i = 0; i < count; i++, data += array->stride, matrices += 16) {
+        luax_copyfieldm(matrices, array, data);
+      }
+    }
+    return true;
+  }
+
+  float* vectors = luax_tofloatvectorarray(L, index, &sourceLength);
+  if (vectors) {
+    luax_fieldcheck(L, array->fieldCount == 0 && typeComponents[array->type] > 1 &&
+      (array->type < TYPE_MAT2 || array->type > TYPE_MAT4), index, array, true);
+    luax_fieldcheck(L, start >= 1 && (uint64_t) start <= (uint64_t) sourceLength + 1, index, array, true);
+    uint32_t available = sourceLength - (uint32_t) (start - 1);
+    if ((uint32_t) count > available) count = (int) available;
+    vectors += 4 * (start - 1);
+    if (array->type == TYPE_F32x4 && array->stride == 4 * sizeof(float)) {
+      memcpy(data, vectors, count * 4 * sizeof(float));
+    } else {
+      for (int i = 0; i < count; i++, data += array->stride, vectors += 4) {
+        luax_copyfieldv(vectors, array, data);
+      }
+    }
+    return true;
+  }
+
   luax_fieldcheck(L, lua_istable(L, index), index, array, true);
   int length = luax_len(L, index);
   count = MIN(count, (length - start + 1));
@@ -674,21 +719,31 @@ static int l_lovrBufferSetData(lua_State* L) {
     bool success;
 
     if (format->length > 0) {
-      if (!lua_istable(L, 2)) {
+      uint32_t ffiLength = 0;
+      bool ffiArray = luax_tomat4array(L, 2, &ffiLength) != NULL;
+      ffiArray = ffiArray || luax_tofloatvectorarray(L, 2, &ffiLength) != NULL;
+
+      if (!lua_istable(L, 2) && !ffiArray) {
         luax_pushfielderror(L, 2, format, -1);
         return lua_error(L);
       }
 
-      uint32_t length = luax_len(L, 2);
+      uint32_t length = ffiArray ? ffiLength : luax_len(L, 2);
       uint32_t dstIndex = luax_optu32(L, 3, 1) - 1;
       uint32_t srcIndex = luax_optu32(L, 4, 1) - 1;
+      luax_check(L, dstIndex < format->length, "Buffer destination index is out of bounds");
+      luax_check(L, srcIndex < length, "Buffer source index is out of bounds");
 
-      lua_rawgeti(L, 2, srcIndex + 1);
-      uint32_t tstride = format->fieldCount == 0 && lua_type(L, -1) == LUA_TNUMBER ? typeComponents[format->type] : 1;
-      lua_pop(L, 1);
+      uint32_t tstride = 1;
+      if (!ffiArray) {
+        lua_rawgeti(L, 2, srcIndex + 1);
+        tstride = format->fieldCount == 0 && lua_type(L, -1) == LUA_TNUMBER ? typeComponents[format->type] : 1;
+        lua_pop(L, 1);
+      }
 
       uint32_t limit = MIN(format->length - dstIndex, (length - srcIndex) / tstride);
       uint32_t count = luax_optu32(L, 5, limit);
+      luax_check(L, count <= limit, "Buffer data range is out of bounds");
 
       char* data = lovrBufferSetData(buffer, dstIndex * format->stride, count * format->stride);
       luax_assert(L, data);
